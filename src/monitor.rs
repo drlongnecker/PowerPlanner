@@ -260,19 +260,19 @@ mod tests {
 
     #[test]
     fn test_match_triggers_performance() {
-        let s = MonitorState::new(test_config(), "idle-guid".into());
+        let s = MonitorState::new(test_config(), "idle-guid".into(), vec![]);
         assert_eq!(s.decide_plan(true, false, Instant::now()), "perf-guid");
     }
 
     #[test]
     fn test_no_match_no_history_returns_idle() {
-        let s = MonitorState::new(test_config(), "idle-guid".into());
+        let s = MonitorState::new(test_config(), "idle-guid".into(), vec![]);
         assert_eq!(s.decide_plan(false, false, Instant::now()), "idle-guid");
     }
 
     #[test]
     fn test_within_hold_period_stays_performance() {
-        let mut s = MonitorState::new(test_config(), "perf-guid".into());
+        let mut s = MonitorState::new(test_config(), "perf-guid".into(), vec![]);
         let base = Instant::now();
         s.last_match_at = Some(base);
         // 5 seconds later — within 10s hold
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_after_hold_expires_returns_idle() {
-        let mut s = MonitorState::new(test_config(), "perf-guid".into());
+        let mut s = MonitorState::new(test_config(), "perf-guid".into(), vec![]);
         let base = Instant::now();
         s.last_match_at = Some(base);
         // 15 seconds later — past 10s hold
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_on_battery_suppresses_promotion() {
-        let s = MonitorState::new(test_config(), "idle-guid".into());
+        let s = MonitorState::new(test_config(), "idle-guid".into(), vec![]);
         // on_battery = true, promote_on_battery = false → stay idle even with match
         assert_eq!(s.decide_plan(true, true, Instant::now()), "idle-guid");
     }
@@ -299,7 +299,7 @@ mod tests {
     fn test_battery_bypass_allows_promotion() {
         let mut cfg = test_config();
         cfg.general.promote_on_battery = true;
-        let s = MonitorState::new(cfg, "idle-guid".into());
+        let s = MonitorState::new(cfg, "idle-guid".into(), vec![]);
         assert_eq!(s.decide_plan(true, true, Instant::now()), "perf-guid");
     }
 }
