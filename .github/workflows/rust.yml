@@ -24,13 +24,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Run tests
         run: cargo test
 
   build:
     name: Build Release
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: read
     steps:
@@ -42,11 +45,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Set build version timestamp
         id: version
+        shell: bash
         run: echo "VERSION=$(date -u '+%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
 
       - name: Configure build output directory
+        shell: bash
         run: |
           mkdir -p .cargo
           printf '[build]\ntarget-dir = "builds"\n' > .cargo/config.toml
@@ -58,13 +66,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ steps.version.outputs.VERSION }}
-          path: |
-            builds/release/
-            !builds/release/.fingerprint
-            !builds/release/build
-            !builds/release/deps
-            !builds/release/incremental
-            !builds/release/**/*.d
+          path: builds/release/powerplanner.exe
           if-no-files-found: error
 
   notify:
