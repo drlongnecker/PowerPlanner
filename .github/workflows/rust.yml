@@ -68,28 +68,28 @@ jobs:
           path: builds/release/powerplanner.exe
           if-no-files-found: error
   
-    release:
-      name: Create GitHub Release
-      needs: build
-      if: github.ref == 'refs/heads/main'
-      runs-on: ubuntu-latest
-      permissions:
-        contents: write
-      steps:
-        - name: Download release artifact
-          uses: actions/download-artifact@v4
-          with:
-            name: release-${{ needs.build.outputs.version }}
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.build.outputs.version }}
 
-        - name: Create GitHub Release
-          env:
-            GH_TOKEN: ${{ github.token }}
-            GH_REPO: ${{ github.repository }}
-          run: |
-            gh release create "build-${{ needs.build.outputs.version }}" \
-              --title "Build ${{ needs.build.outputs.version }}" \
-              --notes "Automated release from commit ${{ github.sha }}" \
-              powerplanner.exe
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "build-${{ needs.build.outputs.version }}" \
+            --title "Build ${{ needs.build.outputs.version }}" \
+            --notes "Automated release from commit ${{ github.sha }}" \
+            powerplanner.exe
 
   notify:
     name: Notify Build Failure
