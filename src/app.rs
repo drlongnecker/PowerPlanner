@@ -98,7 +98,7 @@ impl eframe::App for PowerPlannerApp {
                 let size = 80.0_f32;
                 let margin = 8.0_f32;
                 let img_rect = egui::Rect::from_min_size(
-                    egui::pos2(panel_rect.left() + margin, panel_rect.bottom() - size - margin),
+                    egui::pos2(panel_rect.right() - size - margin, panel_rect.bottom() - size - margin),
                     egui::vec2(size, size),
                 );
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
