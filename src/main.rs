@@ -12,7 +12,7 @@ mod tray;
 mod types;
 mod ui;
 
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, OnceLock, RwLock, mpsc};
 use power::{PowerApi, WindowsPowerApi};
 
 fn main() {
@@ -71,12 +71,14 @@ fn main() {
 
     // Step 8: Spawn monitor thread
     let (cmd_tx, cmd_rx) = mpsc::channel();
+    let repaint_ctx: Arc<OnceLock<egui::Context>> = Arc::new(OnceLock::new());
     {
         let state = Arc::clone(&app_state);
         let power_clone = Arc::clone(&power);
         let cfg = config.clone();
+        let ctx_holder = Arc::clone(&repaint_ctx);
         std::thread::spawn(move || {
-            monitor::run(cfg, state, cmd_rx, db_conn, power_clone);
+            monitor::run(cfg, state, cmd_rx, db_conn, power_clone, ctx_holder);
         });
     }
 
@@ -117,7 +119,8 @@ fn main() {
     eframe::run_native(
         "PowerPlanner",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            let _ = repaint_ctx.set(cc.egui_ctx.clone());
             Ok(Box::new(app::PowerPlannerApp::new(app_state, cmd_tx, config, tray)))
         }),
     ).unwrap();

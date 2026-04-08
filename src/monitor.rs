@@ -1,5 +1,5 @@
 // src/monitor.rs
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::db;
@@ -44,6 +44,7 @@ pub fn run(
     rx: mpsc::Receiver<MonitorCommand>,
     db_conn: rusqlite::Connection,
     power: Arc<dyn PowerApi>,
+    repaint_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     let initial_guid = power.get_active_plan()
         .map(|p| p.guid)
@@ -165,6 +166,10 @@ pub fn run(
             s.hold_remaining_secs = hold_remaining;
             s.battery = battery;
             s.monitor_running = true;
+        }
+
+        if let Some(ctx) = repaint_ctx.get() {
+            ctx.request_repaint();
         }
 
         std::thread::sleep(poll);

@@ -15,6 +15,7 @@ pub struct PowerPlannerApp {
     pub tray: Option<crate::tray::Tray>,
     bg_texture: Option<egui::TextureHandle>,
     waker_started: bool,
+    last_tooltip_plan: String,
 }
 
 impl PowerPlannerApp {
@@ -24,7 +25,7 @@ impl PowerPlannerApp {
         config: Config,
         tray: Option<crate::tray::Tray>,
     ) -> Self {
-        Self { state, cmd_tx, config, nav: Nav::default(), tray, bg_texture: None, waker_started: false }
+        Self { state, cmd_tx, config, nav: Nav::default(), tray, bg_texture: None, waker_started: false, last_tooltip_plan: String::new() }
     }
 }
 
@@ -52,8 +53,6 @@ impl eframe::App for PowerPlannerApp {
             self.waker_started = true;
         }
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
-
         // Minimize to tray: hide the window rather than keeping it in the taskbar
         if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -76,12 +75,15 @@ impl eframe::App for PowerPlannerApp {
             }
         }
 
-        // Update tray tooltip (runs while window is visible — good enough)
+        // Update tray tooltip only when the plan name changes
         if let Some(ref tray) = self.tray {
             let name = self.state.read().unwrap().current_plan
                 .as_ref().map(|p| p.name.clone())
                 .unwrap_or_else(|| "Unknown".into());
-            tray.set_tooltip(&format!("PowerPlanner — {}", name));
+            if name != self.last_tooltip_plan {
+                tray.set_tooltip(&format!("PowerPlanner — {}", name));
+                self.last_tooltip_plan = name;
+            }
         }
 
         egui::SidePanel::left("nav").show(ctx, |ui| {
@@ -112,20 +114,19 @@ impl eframe::App for PowerPlannerApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let state = self.state.read().unwrap().clone();
+            let state = self.state.read().unwrap();
             match self.nav {
                 Nav::Dashboard => {
-                    crate::ui::dashboard::render(ui, &state, &mut self.config, &self.cmd_tx);
+                    crate::ui::dashboard::render(ui, &*state, &mut self.config, &self.cmd_tx);
                 }
                 Nav::WatchedApps => {
-                    crate::ui::watched::render(ui, &state, &self.cmd_tx, &mut self.config);
+                    crate::ui::watched::render(ui, &*state, &self.cmd_tx, &mut self.config);
                 }
                 Nav::Settings => {
-                    let plans = state.available_plans.clone();
-                    crate::ui::settings::render(ui, &mut self.config, &self.cmd_tx, &plans);
+                    crate::ui::settings::render(ui, &mut self.config, &self.cmd_tx, &state.available_plans);
                 }
                 Nav::History => {
-                    crate::ui::history::render(ui, &state);
+                    crate::ui::history::render(ui, &*state);
                 }
             }
         });
@@ -153,6 +154,10 @@ fn tray_event_thread(
         while let Ok(ev) = tray_icon::TrayIconEvent::receiver().try_recv() {
             if let tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = ev {
                 win32_show_window();
+                // Sync eframe's internal visibility state — win32_show_window bypasses
+                // eframe, so without this eframe still thinks Visible=false and will
+                // deduplicate the next ViewportCommand::Visible(false) as a no-op.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.request_repaint();
             }
         }
@@ -162,6 +167,7 @@ fn tray_event_thread(
             while let Ok(ev) = tray_icon::menu::MenuEvent::receiver().try_recv() {
                 if ev.id == *show_id {
                     win32_show_window();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.request_repaint();
                 } else if ev.id == *balanced_id {
                     let _ = cmd_tx.send(MonitorCommand::SwitchPlan(idle_guid.clone()));
