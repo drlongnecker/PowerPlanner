@@ -34,7 +34,7 @@ pub struct PowerEvent {
 
 #[derive(Debug)]
 pub enum MonitorCommand {
-    SwitchPlan(String),            // GUID to switch to immediately
+    ForcePlan(Option<String>),     // Some(guid) = force and lock; None = clear force, resume auto
     UpdateWatchlist(Vec<String>),  // replace watchlist; monitor picks up next tick
     UpdateConfig(crate::config::Config), // replaces full config; monitor picks up next tick
     Stop,
@@ -51,6 +51,7 @@ pub struct AppState {
     pub monitor_running: bool,
     pub recent_events: VecDeque<PowerEvent>,
     pub last_error: Option<String>,
+    pub forced_plan: Option<PowerPlan>,
 }
 
 impl AppState {

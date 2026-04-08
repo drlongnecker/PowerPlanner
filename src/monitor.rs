@@ -10,15 +10,21 @@ pub struct MonitorState {
     pub config: Config,
     pub last_match_at: Option<Instant>,
     pub current_plan_guid: String,
+    pub forced_plan_guid: Option<String>,
 }
 
 impl MonitorState {
     pub fn new(config: Config, initial_guid: String) -> Self {
-        Self { config, last_match_at: None, current_plan_guid: initial_guid }
+        Self { config, last_match_at: None, current_plan_guid: initial_guid, forced_plan_guid: None }
     }
 
     /// Pure decision function: given current conditions, return the target plan GUID.
     pub fn decide_plan(&self, has_match: bool, on_battery: bool, now: Instant) -> String {
+        // A forced plan overrides all automatic logic.
+        if let Some(ref guid) = self.forced_plan_guid {
+            return guid.clone();
+        }
+
         let suppress = on_battery && !self.config.general.promote_on_battery;
 
         if !suppress && has_match {
@@ -58,10 +64,32 @@ pub fn run(
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 MonitorCommand::Stop => return,
-                MonitorCommand::SwitchPlan(guid) => {
+                MonitorCommand::ForcePlan(Some(guid)) => {
                     if power.set_active_plan(&guid).is_ok() {
+                        let (plan_name, bat_on, bat_pct) = {
+                            let s = app_state.read().unwrap();
+                            let name = s.available_plans.iter()
+                                .find(|p| p.guid == guid)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| guid.clone());
+                            (name, s.battery.on_battery, s.battery.percent)
+                        };
+                        let event = PowerEvent {
+                            ts: chrono::Local::now(),
+                            plan_guid: guid.clone(),
+                            plan_name,
+                            trigger: "manual".into(),
+                            on_battery: bat_on,
+                            battery_pct: bat_pct,
+                        };
+                        let _ = db::insert_event(&db_conn, &event);
+                        app_state.write().unwrap().push_event(event);
+                        state.forced_plan_guid = Some(guid.clone());
                         state.current_plan_guid = guid;
                     }
+                }
+                MonitorCommand::ForcePlan(None) => {
+                    state.forced_plan_guid = None;
                 }
                 MonitorCommand::UpdateWatchlist(list) => {
                     state.config.watchlist.processes = list;
@@ -166,6 +194,10 @@ pub fn run(
             s.hold_remaining_secs = hold_remaining;
             s.battery = battery;
             s.monitor_running = true;
+            s.forced_plan = state.forced_plan_guid.as_ref().map(|guid| {
+                available.iter().find(|p| p.guid == *guid).cloned()
+                    .unwrap_or_else(|| PowerPlan { guid: guid.clone(), name: guid.clone() })
+            });
         }
 
         if let Some(ctx) = repaint_ctx.get() {

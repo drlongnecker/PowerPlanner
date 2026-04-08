@@ -60,6 +60,16 @@ pub fn render(
         }
     }
 
+    // Forced plan banner
+    if let Some(ref forced) = state.forced_plan {
+        ui.horizontal(|ui| {
+            ui.colored_label(egui::Color32::YELLOW, format!("Forced: {}", forced.name));
+            if ui.button("Resume Auto").clicked() {
+                let _ = tx.send(MonitorCommand::ForcePlan(None));
+            }
+        });
+    }
+
     // Error banner
     if let Some(ref err) = state.last_error {
         ui.colored_label(egui::Color32::RED, format!("Error: {}", err));

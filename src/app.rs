@@ -42,6 +42,7 @@ impl eframe::App for PowerPlannerApp {
                 t.show_item_id.clone(),
                 t.balanced_item_id.clone(),
                 t.perf_item_id.clone(),
+                t.resume_item_id.clone(),
                 t.exit_item_id.clone(),
             ));
             let idle_guid = self.config.general.idle_plan_guid.clone();
@@ -143,6 +144,7 @@ fn tray_event_thread(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
     )>,
     idle_guid: String,
     perf_guid: String,
@@ -163,16 +165,18 @@ fn tray_event_thread(
         }
 
         // Tray context-menu items
-        if let Some((ref show_id, ref balanced_id, ref perf_id, ref exit_id)) = ids {
+        if let Some((ref show_id, ref balanced_id, ref perf_id, ref resume_id, ref exit_id)) = ids {
             while let Ok(ev) = tray_icon::menu::MenuEvent::receiver().try_recv() {
                 if ev.id == *show_id {
                     win32_show_window();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.request_repaint();
                 } else if ev.id == *balanced_id {
-                    let _ = cmd_tx.send(MonitorCommand::SwitchPlan(idle_guid.clone()));
+                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(idle_guid.clone())));
                 } else if ev.id == *perf_id {
-                    let _ = cmd_tx.send(MonitorCommand::SwitchPlan(perf_guid.clone()));
+                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(perf_guid.clone())));
+                } else if ev.id == *resume_id {
+                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(None));
                 } else if ev.id == *exit_id {
                     let _ = cmd_tx.send(MonitorCommand::Stop);
                     std::thread::sleep(std::time::Duration::from_millis(300));
