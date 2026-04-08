@@ -1,5 +1,6 @@
 // src/ui/history.rs
 use egui::Ui;
+use egui_extras::{Column, TableBuilder};
 use crate::types::AppState;
 
 pub fn render(ui: &mut Ui, state: &AppState) {
@@ -16,34 +17,48 @@ pub fn render(ui: &mut Ui, state: &AppState) {
 
     ui.separator();
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        egui::Grid::new("history_grid")
-            .num_columns(4)
-            .striped(true)
-            .min_col_width(120.0)
-            .show(ui, |ui| {
-                ui.strong("Time");
-                ui.strong("Plan");
-                ui.strong("Trigger");
-                ui.strong("Power");
-                ui.end_row();
+    // Measure widest plan name so the column never wraps.
+    let plan_col_width = {
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let mut max_w = ui.fonts(|f| f.layout_no_wrap("Plan".to_string(), font_id.clone(), egui::Color32::WHITE).size().x);
+        for event in &state.recent_events {
+            let w = ui.fonts(|f| f.layout_no_wrap(event.plan_name.clone(), font_id.clone(), egui::Color32::WHITE).size().x);
+            if w > max_w { max_w = w; }
+        }
+        max_w + 8.0
+    };
 
-                for event in &state.recent_events {
-                    ui.label(event.ts.format("%Y-%m-%d %H:%M:%S").to_string());
-                    ui.label(&event.plan_name);
-                    ui.label(&event.trigger);
-                    let power = if event.on_battery {
-                        event.battery_pct
-                            .map(|p| format!("Battery {}%", p))
-                            .unwrap_or_else(|| "Battery".into())
-                    } else {
-                        "AC".into()
-                    };
-                    ui.label(power);
-                    ui.end_row();
-                }
-            });
-    });
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::auto())
+        .column(Column::initial(plan_col_width))
+        .column(Column::remainder())
+        .column(Column::auto())
+        .header(20.0, |mut h| {
+            h.col(|ui| { ui.strong("Time"); });
+            h.col(|ui| { ui.strong("Plan"); });
+            h.col(|ui| { ui.strong("Trigger"); });
+            h.col(|ui| { ui.strong("Power"); });
+        })
+        .body(|mut body| {
+            for event in &state.recent_events {
+                body.row(18.0, |mut row| {
+                    row.col(|ui| { ui.label(event.ts.format("%Y-%m-%d %H:%M:%S").to_string()); });
+                    row.col(|ui| { ui.label(&event.plan_name); });
+                    row.col(|ui| { ui.label(&event.trigger); });
+                    row.col(|ui| {
+                        let power = if event.on_battery {
+                            event.battery_pct
+                                .map(|p| format!("Battery {}%", p))
+                                .unwrap_or_else(|| "Battery".into())
+                        } else {
+                            "AC".into()
+                        };
+                        ui.label(power);
+                    });
+                });
+            }
+        });
 
     ui.separator();
     ui.weak("Graph view planned for v2.");

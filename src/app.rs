@@ -32,9 +32,6 @@ impl PowerPlannerApp {
 impl eframe::App for PowerPlannerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Spawn the tray-event thread once.
-        // Root cause: ViewportCommand::Visible(false) stops winit from delivering WM_PAINT,
-        // so request_repaint() never triggers update() while the window is hidden.
-        // Fix: handle all tray/menu events in this thread using Win32 directly.
         if !self.waker_started {
             let ctx2 = ctx.clone();
             let cmd_tx2 = self.cmd_tx.clone();

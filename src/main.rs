@@ -48,8 +48,9 @@ fn main() {
         log::info!("First run — config written with current plan as idle plan");
     }
 
-    // Step 5b: Sync autostart registration state (once at startup, avoids per-frame subprocess)
+    // Step 5b: Sync autostart state once at startup (avoids per-frame subprocess/Win32 calls)
     config.autostart.registered = scheduler::is_registered();
+    config.autostart.is_elevated = scheduler::is_elevated();
 
     // Step 6: Validate stored plan GUIDs
     let guids: Vec<&str> = available_plans.iter().map(|p| p.guid.as_str()).collect();

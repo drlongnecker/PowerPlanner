@@ -23,6 +23,8 @@ pub struct GeneralConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutostartConfig {
     pub registered: bool,
+    #[serde(skip)]
+    pub is_elevated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +45,7 @@ impl Default for Config {
                 promote_on_battery: false,
                 show_tray_balloon_on_switch: true,
             },
-            autostart: AutostartConfig { registered: false },
+            autostart: AutostartConfig { registered: false, is_elevated: false },
             watchlist: WatchlistConfig { processes: vec![] },
         }
     }

@@ -5,17 +5,34 @@ use crate::config::Config;
 use crate::db;
 use crate::power::PowerApi;
 use crate::types::{AppState, MonitorCommand, PowerEvent, PowerPlan, RunningProcess};
+use sysinfo::System as SysInfo;
 
 pub struct MonitorState {
     pub config: Config,
     pub last_match_at: Option<Instant>,
     pub current_plan_guid: String,
     pub forced_plan_guid: Option<String>,
+    pub available_plans: Vec<PowerPlan>,
+    watchlist_lower: Vec<String>,
+    sys: SysInfo,
 }
 
 impl MonitorState {
-    pub fn new(config: Config, initial_guid: String) -> Self {
-        Self { config, last_match_at: None, current_plan_guid: initial_guid, forced_plan_guid: None }
+    pub fn new(config: Config, initial_guid: String, available_plans: Vec<PowerPlan>) -> Self {
+        let watchlist_lower = config.watchlist.processes.iter().map(|s| s.to_lowercase()).collect();
+        Self {
+            config,
+            last_match_at: None,
+            current_plan_guid: initial_guid,
+            forced_plan_guid: None,
+            available_plans,
+            watchlist_lower,
+            sys: SysInfo::new(),
+        }
+    }
+
+    fn rebuild_watchlist_lower(&mut self) {
+        self.watchlist_lower = self.config.watchlist.processes.iter().map(|s| s.to_lowercase()).collect();
     }
 
     /// Pure decision function: given current conditions, return the target plan GUID.
@@ -56,7 +73,8 @@ pub fn run(
         .map(|p| p.guid)
         .unwrap_or_else(|_| config.general.idle_plan_guid.clone());
 
-    let mut state = MonitorState::new(config, initial_guid);
+    let available_plans = app_state.read().unwrap().available_plans.clone();
+    let mut state = MonitorState::new(config, initial_guid, available_plans);
     let mut last_sanity = Instant::now();
 
     loop {
@@ -66,13 +84,13 @@ pub fn run(
                 MonitorCommand::Stop => return,
                 MonitorCommand::ForcePlan(Some(guid)) => {
                     if power.set_active_plan(&guid).is_ok() {
-                        let (plan_name, bat_on, bat_pct) = {
+                        let plan_name = state.available_plans.iter()
+                            .find(|p| p.guid == guid)
+                            .map(|p| p.name.clone())
+                            .unwrap_or_else(|| guid.clone());
+                        let (bat_on, bat_pct) = {
                             let s = app_state.read().unwrap();
-                            let name = s.available_plans.iter()
-                                .find(|p| p.guid == guid)
-                                .map(|p| p.name.clone())
-                                .unwrap_or_else(|| guid.clone());
-                            (name, s.battery.on_battery, s.battery.percent)
+                            (s.battery.on_battery, s.battery.percent)
                         };
                         let event = PowerEvent {
                             ts: chrono::Local::now(),
@@ -93,9 +111,11 @@ pub fn run(
                 }
                 MonitorCommand::UpdateWatchlist(list) => {
                     state.config.watchlist.processes = list;
+                    state.rebuild_watchlist_lower();
                 }
                 MonitorCommand::UpdateConfig(cfg) => {
                     state.config = cfg;
+                    state.rebuild_watchlist_lower();
                 }
             }
         }
@@ -104,12 +124,10 @@ pub fn run(
         let now = Instant::now();
 
         // Enumerate processes
-        let running = get_running_processes();
-        let watchlist_lower: Vec<String> = state.config.watchlist.processes
-            .iter().map(|s| s.to_lowercase()).collect();
+        let running = get_running_processes(&mut state.sys);
         // running is already deduplicated by name (one entry per unique process name)
         let matched: Vec<String> = running.iter()
-            .filter(|p| watchlist_lower.contains(&p.name.to_lowercase()))
+            .filter(|p| state.watchlist_lower.contains(&p.name.to_lowercase()))
             .map(|p| p.name.clone())
             .collect();
         let has_match = !matched.is_empty();
@@ -132,7 +150,7 @@ pub fn run(
             };
 
             if power.set_active_plan(&target_guid).is_ok() {
-                let plan_name = app_state.read().unwrap().available_plans.iter()
+                let plan_name = state.available_plans.iter()
                     .find(|p| p.guid == target_guid)
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| target_guid.clone());
@@ -140,7 +158,7 @@ pub fn run(
                 let event = PowerEvent {
                     ts: chrono::Local::now(),
                     plan_guid: target_guid.clone(),
-                    plan_name: plan_name.clone(),
+                    plan_name,
                     trigger,
                     on_battery: battery.on_battery,
                     battery_pct: battery.percent,
@@ -178,8 +196,7 @@ pub fn run(
                 (hold - elapsed).max(0.0)
             }).filter(|&r| r > 0.0);
 
-            let available = app_state.read().unwrap().available_plans.clone();
-            let current_plan = available.iter()
+            let current_plan = state.available_plans.iter()
                 .find(|p| p.guid == state.current_plan_guid)
                 .cloned()
                 .or_else(|| Some(PowerPlan {
@@ -195,7 +212,7 @@ pub fn run(
             s.battery = battery;
             s.monitor_running = true;
             s.forced_plan = state.forced_plan_guid.as_ref().map(|guid| {
-                available.iter().find(|p| p.guid == *guid).cloned()
+                state.available_plans.iter().find(|p| p.guid == *guid).cloned()
                     .unwrap_or_else(|| PowerPlan { guid: guid.clone(), name: guid.clone() })
             });
         }
@@ -208,9 +225,7 @@ pub fn run(
     }
 }
 
-fn get_running_processes() -> Vec<RunningProcess> {
-    use sysinfo::System;
-    let mut sys = System::new();
+fn get_running_processes(sys: &mut SysInfo) -> Vec<RunningProcess> {
     sys.refresh_processes();
     let mut seen = std::collections::HashSet::new();
     let mut result: Vec<RunningProcess> = sys.processes().values()

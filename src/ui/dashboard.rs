@@ -78,13 +78,24 @@ pub fn render(
     ui.separator();
     ui.heading("Recent Events");
 
+    // Measure the widest plan name so the column never wraps.
+    let plan_col_width = {
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let mut max_w = ui.fonts(|f| f.layout_no_wrap("Plan".to_string(), font_id.clone(), egui::Color32::WHITE).size().x);
+        for event in state.recent_events.iter().take(10) {
+            let w = ui.fonts(|f| f.layout_no_wrap(event.plan_name.clone(), font_id.clone(), egui::Color32::WHITE).size().x);
+            if w > max_w { max_w = w; }
+        }
+        max_w + 8.0
+    };
+
     // TableBuilder handles its own scroll area and keeps the header
     // pinned above the rows so it doesn't scroll out of view.
     TableBuilder::new(ui)
         .striped(true)
         .max_scroll_height(200.0)
         .column(Column::auto())
-        .column(Column::auto())
+        .column(Column::initial(plan_col_width))
         .column(Column::remainder())
         .header(20.0, |mut h| {
             h.col(|ui| { ui.strong("Time"); });

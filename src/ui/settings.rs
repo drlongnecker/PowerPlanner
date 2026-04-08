@@ -103,7 +103,7 @@ pub fn render(
             ui.end_row();
 
             // ── Autostart ─────────────────────────────────────────────────
-            let elevated = crate::scheduler::is_elevated();
+            let elevated = config.autostart.is_elevated;
             ui.vertical(|ui| {
                 ui.strong("Autostart");
                 ui.small("Launch PowerPlanner automatically at login via Task Scheduler.");
