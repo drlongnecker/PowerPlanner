@@ -17,7 +17,10 @@ fn schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
 
 #[cfg(not(windows))]
 fn schtasks(_args: &[&str]) -> std::io::Result<std::process::Output> {
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "schtasks not available"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "schtasks not available",
+    ))
 }
 
 // ── Elevation detection ───────────────────────────────────────────────────────
@@ -30,21 +33,23 @@ pub fn is_elevated() -> bool {
         unsafe { IsUserAnAdmin().as_bool() }
     }
     #[cfg(not(windows))]
-    { true }
+    {
+        true
+    }
 }
 
 // ── UAC-triggered schtasks (used when not already elevated) ──────────────────
 
 #[cfg(windows)]
 fn shell_execute_runas(schtasks_args: &str) -> Result<()> {
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
-    use windows::core::PCWSTR;
 
-    let verb:  Vec<u16> = "runas\0".encode_utf16().collect();
-    let file:  Vec<u16> = "schtasks.exe\0".encode_utf16().collect();
-    let args:  Vec<u16> = format!("{}\0", schtasks_args).encode_utf16().collect();
+    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let file: Vec<u16> = "schtasks.exe\0".encode_utf16().collect();
+    let args: Vec<u16> = format!("{}\0", schtasks_args).encode_utf16().collect();
 
     let code = unsafe {
         ShellExecuteW(
@@ -54,7 +59,8 @@ fn shell_execute_runas(schtasks_args: &str) -> Result<()> {
             PCWSTR(args.as_ptr()),
             PCWSTR::null(),
             SW_HIDE,
-        ).0 as isize
+        )
+        .0 as isize
     };
 
     if code <= 32 {
@@ -71,9 +77,7 @@ pub fn register() -> Result<()> {
 
     if is_elevated() {
         let out = schtasks(&[
-            "/create", "/tn", TASK_NAME,
-            "/tr", &exe_str,
-            "/sc", "ONLOGON", "/rl", "HIGHEST", "/f",
+            "/create", "/tn", TASK_NAME, "/tr", &exe_str, "/sc", "ONLOGON", "/rl", "HIGHEST", "/f",
         ])?;
         if !out.status.success() {
             bail!("schtasks /create failed");

@@ -18,17 +18,17 @@ pub struct Tray {
 
 impl Tray {
     pub fn new() -> Result<Self> {
-        let show     = MenuItem::new("Show Window", true, None);
+        let show = MenuItem::new("Show Window", true, None);
         let balanced = MenuItem::new("Force Balanced", true, None);
-        let perf     = MenuItem::new("Force High Performance", true, None);
-        let resume   = MenuItem::new("Resume Auto", true, None);
-        let exit     = MenuItem::new("Exit", true, None);
+        let perf = MenuItem::new("Force High Performance", true, None);
+        let resume = MenuItem::new("Resume Auto", true, None);
+        let exit = MenuItem::new("Exit", true, None);
 
-        let show_id     = show.id().clone();
+        let show_id = show.id().clone();
         let balanced_id = balanced.id().clone();
-        let perf_id     = perf.id().clone();
-        let resume_id   = resume.id().clone();
-        let exit_id     = exit.id().clone();
+        let perf_id = perf.id().clone();
+        let resume_id = resume.id().clone();
+        let exit_id = exit.id().clone();
 
         let sep1 = PredefinedMenuItem::separator();
         let sep2 = PredefinedMenuItem::separator();
@@ -59,7 +59,7 @@ impl Tray {
 
 fn load_icon() -> tray_icon::Icon {
     if let Ok(img) = image::load_from_memory(LOGO_PNG) {
-        let img  = img.resize(32, 32, image::imageops::FilterType::Lanczos3);
+        let img = img.resize(32, 32, image::imageops::FilterType::Lanczos3);
         let rgba = img.into_rgba8();
         let (w, h) = rgba.dimensions();
         if let Ok(icon) = tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
@@ -67,6 +67,8 @@ fn load_icon() -> tray_icon::Icon {
         }
     }
     // Fallback: plain gray square
-    let rgba: Vec<u8> = (0..32 * 32).flat_map(|_| [120u8, 120u8, 120u8, 255u8]).collect();
+    let rgba: Vec<u8> = (0..32 * 32)
+        .flat_map(|_| [120u8, 120u8, 120u8, 255u8])
+        .collect();
     tray_icon::Icon::from_rgba(rgba, 32, 32).unwrap()
 }

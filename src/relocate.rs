@@ -13,20 +13,29 @@ pub fn check() -> RelocateAction {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
     {
         Some(d) => d,
-        None => return RelocateAction::Needed { suggested: suggested_path() },
+        None => {
+            return RelocateAction::Needed {
+                suggested: suggested_path(),
+            }
+        }
     };
 
     if is_writable(&exe_dir) {
         RelocateAction::NotNeeded
     } else {
-        RelocateAction::Needed { suggested: suggested_path() }
+        RelocateAction::Needed {
+            suggested: suggested_path(),
+        }
     }
 }
 
 pub fn is_writable(dir: &Path) -> bool {
     let test = dir.join(".powerplanner_write_test");
     match std::fs::write(&test, b"x") {
-        Ok(_) => { let _ = std::fs::remove_file(&test); true }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test);
+            true
+        }
         Err(_) => false,
     }
 }
@@ -68,6 +77,8 @@ mod tests {
 
     #[test]
     fn test_suggested_path_ends_with_exe() {
-        assert!(suggested_path().to_string_lossy().ends_with("PowerPlanner.exe"));
+        assert!(suggested_path()
+            .to_string_lossy()
+            .ends_with("PowerPlanner.exe"));
     }
 }

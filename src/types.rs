@@ -1,6 +1,6 @@
 // src/types.rs
-use std::collections::VecDeque;
 use chrono::{DateTime, Local};
+use std::collections::VecDeque;
 
 /// A deduplicated snapshot of a running process (name + optional exe path).
 #[derive(Debug, Clone, Default)]
@@ -27,16 +27,17 @@ pub struct PowerEvent {
     pub ts: DateTime<Local>,
     pub plan_name: String,
     pub plan_guid: String,
-    pub trigger: String,    // process name | "manual" | "hold expired" | "startup"
+    pub trigger: String, // process name | "manual" | "hold expired" | "startup"
     pub on_battery: bool,
     pub battery_pct: Option<u8>,
 }
 
 #[derive(Debug)]
 pub enum MonitorCommand {
-    ForcePlan(Option<String>),     // Some(guid) = force and lock; None = clear force, resume auto
-    UpdateWatchlist(Vec<String>),  // replace watchlist; monitor picks up next tick
+    ForcePlan(Option<String>), // Some(guid) = force and lock; None = clear force, resume auto
+    UpdateWatchlist(Vec<String>), // replace watchlist; monitor picks up next tick
     UpdateConfig(crate::config::Config), // replaces full config; monitor picks up next tick
+    RefreshPlans,
     Stop,
 }
 
@@ -47,6 +48,10 @@ pub struct AppState {
     pub matched_processes: Vec<String>,
     pub all_running_processes: Vec<RunningProcess>,
     pub hold_remaining_secs: Option<f32>,
+    pub idle_for_secs: Option<f32>,
+    pub cpu_average_percent: Option<f32>,
+    pub low_power_ready_input: bool,
+    pub low_power_ready_cpu: bool,
     pub battery: BatteryStatus,
     pub monitor_running: bool,
     pub recent_events: VecDeque<PowerEvent>,

@@ -1,9 +1,9 @@
 // src/app.rs
-use eframe::egui;
-use std::sync::{mpsc, Arc, RwLock};
 use crate::config::Config;
 use crate::types::{AppState, MonitorCommand};
 use crate::ui::Nav;
+use eframe::egui;
+use std::sync::{mpsc, Arc, RwLock};
 
 const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
 
@@ -16,6 +16,7 @@ pub struct PowerPlannerApp {
     bg_texture: Option<egui::TextureHandle>,
     waker_started: bool,
     last_tooltip_plan: String,
+    last_nav: Nav,
 }
 
 impl PowerPlannerApp {
@@ -25,7 +26,17 @@ impl PowerPlannerApp {
         config: Config,
         tray: Option<crate::tray::Tray>,
     ) -> Self {
-        Self { state, cmd_tx, config, nav: Nav::default(), tray, bg_texture: None, waker_started: false, last_tooltip_plan: String::new() }
+        Self {
+            state,
+            cmd_tx,
+            config,
+            nav: Nav::default(),
+            tray,
+            bg_texture: None,
+            waker_started: false,
+            last_tooltip_plan: String::new(),
+            last_nav: Nav::default(),
+        }
     }
 }
 
@@ -35,18 +46,20 @@ impl eframe::App for PowerPlannerApp {
         if !self.waker_started {
             let ctx2 = ctx.clone();
             let cmd_tx2 = self.cmd_tx.clone();
-            let ids = self.tray.as_ref().map(|t| (
-                t.show_item_id.clone(),
-                t.balanced_item_id.clone(),
-                t.perf_item_id.clone(),
-                t.resume_item_id.clone(),
-                t.exit_item_id.clone(),
-            ));
-            let idle_guid = self.config.general.idle_plan_guid.clone();
+            let ids = self.tray.as_ref().map(|t| {
+                (
+                    t.show_item_id.clone(),
+                    t.balanced_item_id.clone(),
+                    t.perf_item_id.clone(),
+                    t.resume_item_id.clone(),
+                    t.exit_item_id.clone(),
+                )
+            });
+            let standard_guid = self.config.general.standard_plan_guid.clone();
             let perf_guid = self.config.general.performance_plan_guid.clone();
             std::thread::Builder::new()
                 .name("tray-waker".into())
-                .spawn(move || tray_event_thread(ctx2, cmd_tx2, ids, idle_guid, perf_guid))
+                .spawn(move || tray_event_thread(ctx2, cmd_tx2, ids, standard_guid, perf_guid))
                 .ok();
             self.waker_started = true;
         }
@@ -65,18 +78,20 @@ impl eframe::App for PowerPlannerApp {
                     [w as usize, h as usize],
                     rgba.as_raw(),
                 );
-                self.bg_texture = Some(ctx.load_texture(
-                    "bg_logo",
-                    color_image,
-                    egui::TextureOptions::LINEAR,
-                ));
+                self.bg_texture =
+                    Some(ctx.load_texture("bg_logo", color_image, egui::TextureOptions::LINEAR));
             }
         }
 
         // Update tray tooltip only when the plan name changes
         if let Some(ref tray) = self.tray {
-            let name = self.state.read().unwrap().current_plan
-                .as_ref().map(|p| p.name.clone())
+            let name = self
+                .state
+                .read()
+                .unwrap()
+                .current_plan
+                .as_ref()
+                .map(|p| p.name.clone())
                 .unwrap_or_else(|| "Unknown".into());
             if name != self.last_tooltip_plan {
                 tray.set_tooltip(&format!("PowerPlanner — {}", name));
@@ -98,7 +113,10 @@ impl eframe::App for PowerPlannerApp {
                 let size = 80.0_f32;
                 let margin = 8.0_f32;
                 let img_rect = egui::Rect::from_min_size(
-                    egui::pos2(panel_rect.right() - size - margin, panel_rect.bottom() - size - margin),
+                    egui::pos2(
+                        panel_rect.right() - size - margin,
+                        panel_rect.bottom() - size - margin,
+                    ),
                     egui::vec2(size, size),
                 );
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
@@ -111,6 +129,11 @@ impl eframe::App for PowerPlannerApp {
             }
         });
 
+        if self.nav == Nav::Settings && self.last_nav != Nav::Settings {
+            let _ = self.cmd_tx.send(MonitorCommand::RefreshPlans);
+        }
+        self.last_nav = self.nav.clone();
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let state = self.state.read().unwrap();
             match self.nav {
@@ -121,7 +144,12 @@ impl eframe::App for PowerPlannerApp {
                     crate::ui::watched::render(ui, &*state, &self.cmd_tx, &mut self.config);
                 }
                 Nav::Settings => {
-                    crate::ui::settings::render(ui, &mut self.config, &self.cmd_tx, &state.available_plans);
+                    crate::ui::settings::render(
+                        ui,
+                        &mut self.config,
+                        &self.cmd_tx,
+                        &state.available_plans,
+                    );
                 }
                 Nav::History => {
                     crate::ui::history::render(ui, &*state);
@@ -143,7 +171,7 @@ fn tray_event_thread(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
     )>,
-    idle_guid: String,
+    standard_guid: String,
     perf_guid: String,
 ) {
     loop {
@@ -151,7 +179,11 @@ fn tray_event_thread(
 
         // Left-click on tray icon → restore window
         while let Ok(ev) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            if let tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = ev {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                ..
+            } = ev
+            {
                 win32_show_window();
                 // Sync eframe's internal visibility state — win32_show_window bypasses
                 // eframe, so without this eframe still thinks Visible=false and will
@@ -169,7 +201,7 @@ fn tray_event_thread(
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.request_repaint();
                 } else if ev.id == *balanced_id {
-                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(idle_guid.clone())));
+                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(standard_guid.clone())));
                 } else if ev.id == *perf_id {
                     let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(perf_guid.clone())));
                 } else if ev.id == *resume_id {

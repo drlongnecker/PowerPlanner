@@ -1,7 +1,7 @@
 // src/ui/history.rs
+use crate::types::AppState;
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
-use crate::types::AppState;
 
 pub fn render(ui: &mut Ui, state: &AppState) {
     ui.heading("History");
@@ -20,10 +20,24 @@ pub fn render(ui: &mut Ui, state: &AppState) {
     // Measure widest plan name so the column never wraps.
     let plan_col_width = {
         let font_id = egui::TextStyle::Body.resolve(ui.style());
-        let mut max_w = ui.fonts(|f| f.layout_no_wrap("Plan".to_string(), font_id.clone(), egui::Color32::WHITE).size().x);
+        let mut max_w = ui.fonts(|f| {
+            f.layout_no_wrap("Plan".to_string(), font_id.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        });
         for event in &state.recent_events {
-            let w = ui.fonts(|f| f.layout_no_wrap(event.plan_name.clone(), font_id.clone(), egui::Color32::WHITE).size().x);
-            if w > max_w { max_w = w; }
+            let w = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    event.plan_name.clone(),
+                    font_id.clone(),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+            });
+            if w > max_w {
+                max_w = w;
+            }
         }
         max_w + 8.0
     };
@@ -35,20 +49,35 @@ pub fn render(ui: &mut Ui, state: &AppState) {
         .column(Column::remainder())
         .column(Column::auto())
         .header(20.0, |mut h| {
-            h.col(|ui| { ui.strong("Time"); });
-            h.col(|ui| { ui.strong("Plan"); });
-            h.col(|ui| { ui.strong("Trigger"); });
-            h.col(|ui| { ui.strong("Power"); });
+            h.col(|ui| {
+                ui.strong("Time");
+            });
+            h.col(|ui| {
+                ui.strong("Plan");
+            });
+            h.col(|ui| {
+                ui.strong("Trigger");
+            });
+            h.col(|ui| {
+                ui.strong("Power");
+            });
         })
         .body(|mut body| {
             for event in &state.recent_events {
                 body.row(18.0, |mut row| {
-                    row.col(|ui| { ui.label(event.ts.format("%Y-%m-%d %H:%M:%S").to_string()); });
-                    row.col(|ui| { ui.label(&event.plan_name); });
-                    row.col(|ui| { ui.label(&event.trigger); });
+                    row.col(|ui| {
+                        ui.label(event.ts.format("%Y-%m-%d %H:%M:%S").to_string());
+                    });
+                    row.col(|ui| {
+                        ui.label(&event.plan_name);
+                    });
+                    row.col(|ui| {
+                        ui.label(&event.trigger);
+                    });
                     row.col(|ui| {
                         let power = if event.on_battery {
-                            event.battery_pct
+                            event
+                                .battery_pct
                                 .map(|p| format!("Battery {}%", p))
                                 .unwrap_or_else(|| "Battery".into())
                         } else {

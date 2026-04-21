@@ -4,6 +4,7 @@
 mod app;
 mod config;
 mod db;
+mod idle;
 mod monitor;
 mod power;
 mod relocate;
@@ -12,8 +13,8 @@ mod tray;
 mod types;
 mod ui;
 
-use std::sync::{Arc, OnceLock, RwLock, mpsc};
 use power::{PowerApi, WindowsPowerApi};
+use std::sync::{mpsc, Arc, OnceLock, RwLock};
 
 fn main() {
     setup_logging();
@@ -40,29 +41,29 @@ fn main() {
 
     // Step 5: Enumerate plans; detect initial plan
     let available_plans = power.enumerate_plans().unwrap_or_default();
+    let active_plan = power.get_active_plan().ok();
+    config::initialize_plan_selection(
+        &mut config,
+        &available_plans,
+        active_plan.as_ref(),
+        is_first_run,
+    );
     if is_first_run {
-        if let Ok(active) = power.get_active_plan() {
-            config.general.idle_plan_guid = active.guid;
-        }
         let _ = config::save(&config);
-        log::info!("First run — config written with current plan as idle plan");
+        log::info!("First run — config written with runtime power plan defaults");
     }
 
     // Step 5b: Sync autostart state once at startup (avoids per-frame subprocess/Win32 calls)
     config.autostart.registered = scheduler::is_registered();
     config.autostart.is_elevated = scheduler::is_elevated();
 
-    // Step 6: Validate stored plan GUIDs
-    let guids: Vec<&str> = available_plans.iter().map(|p| p.guid.as_str()).collect();
-    if !guids.contains(&config.general.idle_plan_guid.as_str()) {
-        log::warn!("Idle plan GUID not found — falling back to Balanced");
-        config.general.idle_plan_guid = "381b4222-f694-41f0-9685-ff5bb260df2e".into();
-    }
-
     // Step 7: Build shared AppState; pre-populate history from DB so it survives restarts
-    let initial_plan = power.get_active_plan().ok();
+    let initial_plan = active_plan.or_else(|| power.get_active_plan().ok());
     let initial_events: std::collections::VecDeque<types::PowerEvent> =
-        db::query_recent(&db_conn, 50).unwrap_or_default().into_iter().collect();
+        db::query_recent(&db_conn, 50)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
     let app_state = Arc::new(RwLock::new(types::AppState {
         available_plans: available_plans.clone(),
         current_plan: initial_plan,
@@ -85,17 +86,21 @@ fn main() {
 
     // Step 9: Log startup event
     if let Ok(conn) = db::open() {
-        let plan_name = power.get_active_plan()
+        let plan_name = power
+            .get_active_plan()
             .map(|p| p.name)
             .unwrap_or_else(|_| "Unknown".into());
-        let _ = db::insert_event(&conn, &types::PowerEvent {
-            ts: chrono::Local::now(),
-            plan_guid: config.general.idle_plan_guid.clone(),
-            plan_name,
-            trigger: "startup".into(),
-            on_battery: false,
-            battery_pct: None,
-        });
+        let _ = db::insert_event(
+            &conn,
+            &types::PowerEvent {
+                ts: chrono::Local::now(),
+                plan_guid: config.general.standard_plan_guid.clone(),
+                plan_name,
+                trigger: "startup".into(),
+                on_battery: false,
+                battery_pct: None,
+            },
+        );
     }
 
     // Step 10: Build tray
@@ -106,7 +111,11 @@ fn main() {
     let icon = image::load_from_memory(LOGO_PNG).ok().map(|img| {
         let rgba = img.into_rgba8();
         let (width, height) = rgba.dimensions();
-        std::sync::Arc::new(egui::IconData { rgba: rgba.into_raw(), width, height })
+        std::sync::Arc::new(egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        })
     });
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("PowerPlanner")
@@ -115,16 +124,22 @@ fn main() {
     if let Some(icon_data) = icon {
         viewport = viewport.with_icon(icon_data);
     }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
 
     eframe::run_native(
         "PowerPlanner",
         options,
         Box::new(move |cc| {
             let _ = repaint_ctx.set(cc.egui_ctx.clone());
-            Ok(Box::new(app::PowerPlannerApp::new(app_state, cmd_tx, config, tray)))
+            Ok(Box::new(app::PowerPlannerApp::new(
+                app_state, cmd_tx, config, tray,
+            )))
         }),
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 fn setup_logging() {
@@ -161,17 +176,20 @@ fn setup_logging() {
 fn prompt_relocate(suggested: &std::path::Path) -> bool {
     #[cfg(windows)]
     {
+        use windows::core::PCWSTR;
         use windows::Win32::UI::WindowsAndMessaging::{
             MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
         };
-        use windows::core::PCWSTR;
 
         let msg = format!(
             "PowerPlanner needs a writable location for settings.\n\nMove to {}?",
             suggested.display()
         );
         let msg_w: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-        let title_w: Vec<u16> = "PowerPlanner".encode_utf16().chain(std::iter::once(0)).collect();
+        let title_w: Vec<u16> = "PowerPlanner"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         unsafe {
             MessageBoxW(

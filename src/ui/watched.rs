@@ -1,8 +1,8 @@
+use crate::config::Config;
+use crate::types::{AppState, MonitorCommand};
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 use std::sync::mpsc;
-use crate::config::Config;
-use crate::types::{AppState, MonitorCommand};
 
 pub fn render(
     ui: &mut Ui,
@@ -31,7 +31,9 @@ pub fn render(
     if let Some(proc) = to_remove {
         config.watchlist.processes.retain(|p| p != &proc);
         let _ = crate::config::save(config);
-        let _ = tx.send(MonitorCommand::UpdateWatchlist(config.watchlist.processes.clone()));
+        let _ = tx.send(MonitorCommand::UpdateWatchlist(
+            config.watchlist.processes.clone(),
+        ));
     }
 
     ui.add_space(6.0);
@@ -40,9 +42,7 @@ pub fn render(
     ui.horizontal(|ui| {
         let id = ui.make_persistent_id("add_proc_input");
         let mut text = ui.data_mut(|d| d.get_temp::<String>(id).unwrap_or_default());
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut text).hint_text("e.g. cmake.exe"),
-        );
+        let resp = ui.add(egui::TextEdit::singleline(&mut text).hint_text("e.g. cmake.exe"));
         ui.data_mut(|d| d.insert_temp(id, text.clone()));
 
         if ui.button("Browse…").clicked() {
@@ -73,9 +73,15 @@ pub fn render(
     ui.small("Promote an app to permanently add it to the watch list.");
     ui.add_space(4.0);
 
-    let watchlist_lower: Vec<String> = config.watchlist.processes
-        .iter().map(|p| p.to_lowercase()).collect();
-    let unmatched: Vec<&crate::types::RunningProcess> = state.all_running_processes.iter()
+    let watchlist_lower: Vec<String> = config
+        .watchlist
+        .processes
+        .iter()
+        .map(|p| p.to_lowercase())
+        .collect();
+    let unmatched: Vec<&crate::types::RunningProcess> = state
+        .all_running_processes
+        .iter()
         .filter(|p| !watchlist_lower.contains(&p.name.to_lowercase()))
         .collect();
 
@@ -83,23 +89,28 @@ pub fn render(
     egui::ScrollArea::vertical().show(ui, |ui| {
         TableBuilder::new(ui)
             .striped(true)
-            .column(Column::auto())             // [+] button
-            .column(Column::initial(180.0))     // process name — wider default
-            .column(Column::remainder())        // path — fills all remaining width
+            .column(Column::auto()) // [+] button
+            .column(Column::initial(180.0)) // process name — wider default
+            .column(Column::remainder()) // path — fills all remaining width
             .body(|mut body| {
                 for proc in &unmatched {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
-                            if ui.small_button("+").on_hover_text("Add to watch list").clicked() {
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Add to watch list")
+                                .clicked()
+                            {
                                 to_promote = Some(proc.name.clone());
                             }
                         });
-                        row.col(|ui| { ui.label(&proc.name); });
+                        row.col(|ui| {
+                            ui.label(&proc.name);
+                        });
                         row.col(|ui| {
                             let path_text = proc.path.as_deref().unwrap_or("—");
                             ui.add(
-                                egui::Label::new(egui::RichText::new(path_text).weak())
-                                    .truncate(),
+                                egui::Label::new(egui::RichText::new(path_text).weak()).truncate(),
                             );
                         });
                     });
@@ -121,6 +132,8 @@ fn add_by_name(name: &str, config: &mut Config, tx: &mpsc::Sender<MonitorCommand
     if !config.watchlist.processes.contains(&normalized) {
         config.watchlist.processes.push(normalized);
         let _ = crate::config::save(config);
-        let _ = tx.send(MonitorCommand::UpdateWatchlist(config.watchlist.processes.clone()));
+        let _ = tx.send(MonitorCommand::UpdateWatchlist(
+            config.watchlist.processes.clone(),
+        ));
     }
 }

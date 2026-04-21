@@ -1,6 +1,6 @@
 // src/power.rs
-use anyhow::{bail, Result};
 use crate::types::{BatteryStatus, PowerPlan};
+use anyhow::{bail, Result};
 
 pub trait PowerApi: Send + Sync {
     fn enumerate_plans(&self) -> Result<Vec<PowerPlan>>;
@@ -71,7 +71,11 @@ impl PowerApi for WindowsPowerApi {
             GetSystemPowerStatus(&mut s)?;
             Ok(BatteryStatus {
                 on_battery: s.ACLineStatus == 0,
-                percent: if s.BatteryLifePercent == 255 { None } else { Some(s.BatteryLifePercent) },
+                percent: if s.BatteryLifePercent == 255 {
+                    None
+                } else {
+                    Some(s.BatteryLifePercent)
+                },
                 charging: (s.BatteryFlag & 0x08) != 0,
             })
         }
@@ -80,12 +84,21 @@ impl PowerApi for WindowsPowerApi {
 
 #[cfg(not(windows))]
 impl PowerApi for WindowsPowerApi {
-    fn enumerate_plans(&self) -> Result<Vec<PowerPlan>> { Ok(vec![]) }
-    fn get_active_plan(&self) -> Result<PowerPlan> {
-        Ok(PowerPlan { guid: "stub".into(), name: "Stub Plan".into() })
+    fn enumerate_plans(&self) -> Result<Vec<PowerPlan>> {
+        Ok(vec![])
     }
-    fn set_active_plan(&self, _guid: &str) -> Result<()> { Ok(()) }
-    fn get_battery_status(&self) -> Result<BatteryStatus> { Ok(BatteryStatus::default()) }
+    fn get_active_plan(&self) -> Result<PowerPlan> {
+        Ok(PowerPlan {
+            guid: "stub".into(),
+            name: "Stub Plan".into(),
+        })
+    }
+    fn set_active_plan(&self, _guid: &str) -> Result<()> {
+        Ok(())
+    }
+    fn get_battery_status(&self) -> Result<BatteryStatus> {
+        Ok(BatteryStatus::default())
+    }
 }
 
 #[cfg(test)]
@@ -103,8 +116,14 @@ pub mod mock {
         pub fn new() -> Self {
             Self {
                 plans: vec![
-                    PowerPlan { guid: "balanced-guid".into(), name: "Balanced".into() },
-                    PowerPlan { guid: "perf-guid".into(), name: "High Performance".into() },
+                    PowerPlan {
+                        guid: "balanced-guid".into(),
+                        name: "Balanced".into(),
+                    },
+                    PowerPlan {
+                        guid: "perf-guid".into(),
+                        name: "High Performance".into(),
+                    },
                 ],
                 active_guid: Mutex::new("balanced-guid".into()),
                 battery: BatteryStatus::default(),
@@ -113,18 +132,29 @@ pub mod mock {
     }
 
     impl PowerApi for MockPowerApi {
-        fn enumerate_plans(&self) -> Result<Vec<PowerPlan>> { Ok(self.plans.clone()) }
+        fn enumerate_plans(&self) -> Result<Vec<PowerPlan>> {
+            Ok(self.plans.clone())
+        }
         fn get_active_plan(&self) -> Result<PowerPlan> {
             let guid = self.active_guid.lock().unwrap().clone();
-            let plan = self.plans.iter().find(|p| p.guid == guid).cloned()
-                .unwrap_or(PowerPlan { name: guid.clone(), guid });
+            let plan = self
+                .plans
+                .iter()
+                .find(|p| p.guid == guid)
+                .cloned()
+                .unwrap_or(PowerPlan {
+                    name: guid.clone(),
+                    guid,
+                });
             Ok(plan)
         }
         fn set_active_plan(&self, guid: &str) -> Result<()> {
             *self.active_guid.lock().unwrap() = guid.to_string();
             Ok(())
         }
-        fn get_battery_status(&self) -> Result<BatteryStatus> { Ok(self.battery.clone()) }
+        fn get_battery_status(&self) -> Result<BatteryStatus> {
+            Ok(self.battery.clone())
+        }
     }
 
     #[cfg(test)]

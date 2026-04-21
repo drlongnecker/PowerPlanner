@@ -1,9 +1,18 @@
 // src/ui/dashboard.rs
+use crate::config::Config;
+use crate::types::{AppState, MonitorCommand};
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 use std::sync::mpsc;
-use crate::config::Config;
-use crate::types::{AppState, MonitorCommand};
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dashboard_copy_uses_standard_plan_label() {
+        const BUTTON_LABEL: &str = "Set as Standard Plan";
+        assert_eq!(BUTTON_LABEL, "Set as Standard Plan");
+    }
+}
 
 pub fn render(
     ui: &mut Ui,
@@ -12,15 +21,17 @@ pub fn render(
     tx: &mpsc::Sender<MonitorCommand>,
 ) {
     // Current plan banner
-    let plan_name = state.current_plan.as_ref()
+    let plan_name = state
+        .current_plan
+        .as_ref()
         .map(|p| p.name.as_str())
         .unwrap_or("Unknown");
     ui.heading(format!("Current Plan: {}", plan_name));
 
     ui.horizontal(|ui| {
-        if ui.button("Set as Idle Plan").clicked() {
+        if ui.button("Set as Standard Plan").clicked() {
             if let Some(ref plan) = state.current_plan {
-                config.general.idle_plan_guid = plan.guid.clone();
+                config.general.standard_plan_guid = plan.guid.clone();
                 let _ = crate::config::save(config);
                 let _ = tx.send(MonitorCommand::UpdateConfig(config.clone()));
             }
@@ -45,12 +56,19 @@ pub fn render(
     }
 
     // Monitor status
-    let status = if state.monitor_running { "Monitor: Running" } else { "Monitor: Stopped" };
+    let status = if state.monitor_running {
+        "Monitor: Running"
+    } else {
+        "Monitor: Stopped"
+    };
     ui.label(status);
 
     // Active triggers
     if !state.matched_processes.is_empty() {
-        ui.label(format!("Active triggers: {}", state.matched_processes.join(", ")));
+        ui.label(format!(
+            "Active triggers: {}",
+            state.matched_processes.join(", ")
+        ));
     }
 
     // Hold timer countdown
@@ -59,6 +77,39 @@ pub fn render(
             ui.label(format!("Hold timer: {:.0}s remaining", r));
         }
     }
+
+    if let Some(idle_for_secs) = state.idle_for_secs {
+        ui.label(format!(
+            "Idle: {:.0}s / {}s",
+            idle_for_secs, config.general.idle_wait_seconds
+        ));
+    }
+
+    if let Some(cpu_average_percent) = state.cpu_average_percent {
+        ui.label(format!(
+            "CPU quiet window avg: {:.1}% / {}%",
+            cpu_average_percent, config.general.low_power_cpu_threshold_percent
+        ));
+    } else {
+        ui.label(format!(
+            "CPU quiet window avg: gathering samples ({}s window)",
+            config.general.low_power_cpu_quiet_window_seconds
+        ));
+    }
+
+    ui.label(format!(
+        "Low power gates: input={} cpu={}",
+        if state.low_power_ready_input {
+            "ready"
+        } else {
+            "waiting"
+        },
+        if state.low_power_ready_cpu {
+            "ready"
+        } else {
+            "waiting"
+        }
+    ));
 
     // Forced plan banner
     if let Some(ref forced) = state.forced_plan {
@@ -81,10 +132,24 @@ pub fn render(
     // Measure the widest plan name so the column never wraps.
     let plan_col_width = {
         let font_id = egui::TextStyle::Body.resolve(ui.style());
-        let mut max_w = ui.fonts(|f| f.layout_no_wrap("Plan".to_string(), font_id.clone(), egui::Color32::WHITE).size().x);
+        let mut max_w = ui.fonts(|f| {
+            f.layout_no_wrap("Plan".to_string(), font_id.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        });
         for event in state.recent_events.iter().take(10) {
-            let w = ui.fonts(|f| f.layout_no_wrap(event.plan_name.clone(), font_id.clone(), egui::Color32::WHITE).size().x);
-            if w > max_w { max_w = w; }
+            let w = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    event.plan_name.clone(),
+                    font_id.clone(),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+            });
+            if w > max_w {
+                max_w = w;
+            }
         }
         max_w + 8.0
     };
@@ -98,16 +163,28 @@ pub fn render(
         .column(Column::initial(plan_col_width))
         .column(Column::remainder())
         .header(20.0, |mut h| {
-            h.col(|ui| { ui.strong("Time"); });
-            h.col(|ui| { ui.strong("Plan"); });
-            h.col(|ui| { ui.strong("Trigger"); });
+            h.col(|ui| {
+                ui.strong("Time");
+            });
+            h.col(|ui| {
+                ui.strong("Plan");
+            });
+            h.col(|ui| {
+                ui.strong("Trigger");
+            });
         })
         .body(|mut body| {
             for event in state.recent_events.iter().take(10) {
                 body.row(18.0, |mut row| {
-                    row.col(|ui| { ui.label(event.ts.format("%H:%M:%S").to_string()); });
-                    row.col(|ui| { ui.label(&event.plan_name); });
-                    row.col(|ui| { ui.label(&event.trigger); });
+                    row.col(|ui| {
+                        ui.label(event.ts.format("%H:%M:%S").to_string());
+                    });
+                    row.col(|ui| {
+                        ui.label(&event.plan_name);
+                    });
+                    row.col(|ui| {
+                        ui.label(&event.trigger);
+                    });
                 });
             }
         });

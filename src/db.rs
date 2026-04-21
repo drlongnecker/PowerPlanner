@@ -1,9 +1,9 @@
 // src/db.rs
+use crate::types::PowerEvent;
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
-use crate::types::PowerEvent;
 
 pub fn db_path() -> PathBuf {
     dirs::data_local_dir()
@@ -23,7 +23,8 @@ pub fn open() -> Result<Connection> {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS power_events (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             ts          INTEGER NOT NULL,
@@ -34,7 +35,8 @@ fn migrate(conn: &Connection) -> Result<()> {
             battery_pct INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_power_events_ts ON power_events(ts);
-    ")?;
+    ",
+    )?;
     Ok(())
 }
 
@@ -85,7 +87,13 @@ pub fn export_csv(conn: &Connection) -> Result<String> {
         let ts_ms: i64 = row.get(0)?;
         let on_battery: i32 = row.get(3)?;
         let battery_pct: Option<i32> = row.get(4)?;
-        Ok((ts_ms, row.get::<_, String>(1)?, row.get::<_, String>(2)?, on_battery, battery_pct))
+        Ok((
+            ts_ms,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            on_battery,
+            battery_pct,
+        ))
     })?;
     for row in rows {
         let (ts_ms, plan, trigger, on_bat, pct) = row?;
@@ -94,7 +102,10 @@ pub fn export_csv(conn: &Connection) -> Result<String> {
         out.push_str(&format!(
             "{},{},{},{},{}\n",
             ts.format("%Y-%m-%d %H:%M:%S"),
-            plan, trigger, on_bat, pct_str
+            plan,
+            trigger,
+            on_bat,
+            pct_str
         ));
     }
     Ok(out)
