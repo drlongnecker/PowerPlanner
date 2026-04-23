@@ -4,6 +4,9 @@ use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 use std::sync::mpsc;
 
+const ACTION_COLUMN_WIDTH: f32 = 28.0;
+const NAME_COLUMN_WIDTH: f32 = 180.0;
+
 pub fn render(
     ui: &mut Ui,
     state: &AppState,
@@ -13,30 +16,6 @@ pub fn render(
     ui.heading("Watch List");
     ui.small("These processes trigger High Performance mode when running.");
     ui.separator();
-
-    // ── Current watchlist: 2-column table ([-] | name) ────────────────────
-    let mut to_remove: Option<String> = None;
-    egui::Grid::new("watchlist_grid")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            for proc in &config.watchlist.processes {
-                if ui.small_button("–").clicked() {
-                    to_remove = Some(proc.clone());
-                }
-                ui.label(proc);
-                ui.end_row();
-            }
-        });
-    if let Some(proc) = to_remove {
-        config.watchlist.processes.retain(|p| p != &proc);
-        let _ = crate::config::save(config);
-        let _ = tx.send(MonitorCommand::UpdateWatchlist(
-            config.watchlist.processes.clone(),
-        ));
-    }
-
-    ui.add_space(6.0);
 
     // ── Add by name or browse ──────────────────────────────────────────────
     ui.horizontal(|ui| {
@@ -66,6 +45,36 @@ pub fn render(
         }
     });
 
+    ui.add_space(6.0);
+
+    // ── Current watchlist: 2-column table ([-] | name) ────────────────────
+    let mut to_remove: Option<String> = None;
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::exact(ACTION_COLUMN_WIDTH))
+        .column(Column::initial(NAME_COLUMN_WIDTH))
+        .body(|mut body| {
+            for proc in &config.watchlist.processes {
+                body.row(20.0, |mut row| {
+                    row.col(|ui| {
+                        if ui.small_button("–").clicked() {
+                            to_remove = Some(proc.clone());
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.label(proc);
+                    });
+                });
+            }
+        });
+    if let Some(proc) = to_remove {
+        config.watchlist.processes.retain(|p| p != &proc);
+        let _ = crate::config::save(config);
+        let _ = tx.send(MonitorCommand::UpdateWatchlist(
+            config.watchlist.processes.clone(),
+        ));
+    }
+
     ui.separator();
 
     // ── Running now: 3-column table (name | path | [+]) ───────────────────
@@ -89,8 +98,8 @@ pub fn render(
     egui::ScrollArea::vertical().show(ui, |ui| {
         TableBuilder::new(ui)
             .striped(true)
-            .column(Column::auto()) // [+] button
-            .column(Column::initial(180.0)) // process name — wider default
+            .column(Column::exact(ACTION_COLUMN_WIDTH))
+            .column(Column::initial(NAME_COLUMN_WIDTH))
             .column(Column::remainder()) // path — fills all remaining width
             .body(|mut body| {
                 for proc in &unmatched {
@@ -109,8 +118,13 @@ pub fn render(
                         });
                         row.col(|ui| {
                             let path_text = proc.path.as_deref().unwrap_or("—");
+                            let path_font_size =
+                                (egui::TextStyle::Body.resolve(ui.style()).size - 2.0).max(10.0);
                             ui.add(
-                                egui::Label::new(egui::RichText::new(path_text).weak()).truncate(),
+                                egui::Label::new(
+                                    egui::RichText::new(path_text).weak().size(path_font_size),
+                                )
+                                .truncate(),
                             );
                         });
                     });

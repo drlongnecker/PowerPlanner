@@ -105,7 +105,7 @@ impl eframe::App for PowerPlannerApp {
             ui.selectable_value(&mut self.nav, Nav::Dashboard, "Dashboard");
             ui.selectable_value(&mut self.nav, Nav::WatchedApps, "Watched Apps");
             ui.selectable_value(&mut self.nav, Nav::Settings, "Settings");
-            ui.selectable_value(&mut self.nav, Nav::History, "History");
+            ui.selectable_value(&mut self.nav, Nav::History, "Recent Events");
 
             // Watermark: paint logo at bottom-left of the nav panel, low opacity
             if let Some(ref tex) = self.bg_texture {

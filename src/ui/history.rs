@@ -4,7 +4,7 @@ use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 
 pub fn render(ui: &mut Ui, state: &AppState) {
-    ui.heading("History");
+    ui.heading("Recent Events");
 
     ui.horizontal(|ui| {
         if ui.button("Export CSV").clicked() {
@@ -88,9 +88,6 @@ pub fn render(ui: &mut Ui, state: &AppState) {
                 });
             }
         });
-
-    ui.separator();
-    ui.weak("Graph view planned for v2.");
 }
 
 fn export_to_desktop() {
