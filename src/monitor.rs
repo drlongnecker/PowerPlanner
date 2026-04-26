@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use sysinfo::System as SysInfo;
 
 const DASHBOARD_CPU_HISTORY_WINDOW: Duration = Duration::from_secs(15 * 60);
+const DASHBOARD_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 struct CpuSample {
@@ -39,6 +40,7 @@ pub struct MonitorState {
     first_cpu_sample_at: Option<Instant>,
     cpu_samples: VecDeque<CpuSample>,
     dashboard_cpu_history: VecDeque<DashboardCpuSample>,
+    last_dashboard_sample_at: Option<Instant>,
     sys: SysInfo,
 }
 
@@ -63,6 +65,7 @@ impl MonitorState {
             first_cpu_sample_at: None,
             cpu_samples: VecDeque::new(),
             dashboard_cpu_history: VecDeque::new(),
+            last_dashboard_sample_at: None,
             sys: SysInfo::new(),
         }
     }
@@ -192,20 +195,30 @@ impl MonitorState {
         "standard".to_string()
     }
 
-    fn record_cpu_history(&mut self, now: Instant, trigger: &str) {
+    fn record_cpu_history(&mut self, now: Instant, trigger: &str) -> Option<CpuHistoryPoint> {
         let Some(average_percent) = self.cpu_average_percent() else {
-            return;
+            return None;
+        };
+
+        if let Some(last_at) = self.last_dashboard_sample_at {
+            if now.duration_since(last_at) < DASHBOARD_SAMPLE_INTERVAL {
+                return None;
+            }
+        }
+
+        self.last_dashboard_sample_at = Some(now);
+
+        let point = CpuHistoryPoint {
+            ts: chrono::Local::now(),
+            average_percent,
+            plan_kind: self.plan_kind_for_guid(&self.current_plan_guid),
+            plan_name: self.plan_name_for_guid(&self.current_plan_guid),
+            trigger: trigger.to_string(),
         };
 
         self.dashboard_cpu_history.push_back(DashboardCpuSample {
             at: now,
-            point: CpuHistoryPoint {
-                ts: chrono::Local::now(),
-                average_percent,
-                plan_kind: self.plan_kind_for_guid(&self.current_plan_guid),
-                plan_name: self.plan_name_for_guid(&self.current_plan_guid),
-                trigger: trigger.to_string(),
-            },
+            point: point.clone(),
         });
 
         while let Some(front) = self.dashboard_cpu_history.front() {
@@ -215,6 +228,8 @@ impl MonitorState {
                 break;
             }
         }
+
+        Some(point)
     }
 
     fn input_is_idle_enough(&self, idle_for: Duration) -> bool {
@@ -458,7 +473,9 @@ pub fn run(
                 });
 
             let history_trigger = state.current_trigger_description(&matched, idle_for, now);
-            state.record_cpu_history(now, &history_trigger);
+            if let Some(point) = state.record_cpu_history(now, &history_trigger) {
+                let _ = db::insert_dashboard_sample(&db_conn, &point);
+            }
 
             let mut s = app_state.write().unwrap();
             s.current_plan = current_plan;
@@ -900,5 +917,22 @@ mod tests {
         assert_eq!(s.cpu_samples.len(), 2);
         assert_eq!(s.cpu_samples[0].usage_percent, 7.0);
         assert_eq!(s.cpu_samples[1].usage_percent, 8.0);
+    }
+
+    #[test]
+    fn test_dashboard_history_sampling_uses_fixed_interval() {
+        let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
+        let base = Instant::now();
+
+        s.record_cpu_sample(base, 4.0);
+        s.record_cpu_sample(base + Duration::from_secs(30), 6.0);
+        let first = s.record_cpu_history(base + Duration::from_secs(30), "standard");
+        let second = s.record_cpu_history(base + Duration::from_secs(35), "standard");
+        let third = s.record_cpu_history(base + Duration::from_secs(60), "standard");
+
+        assert!(first.is_some());
+        assert!(second.is_none());
+        assert!(third.is_some());
+        assert_eq!(s.dashboard_cpu_history.len(), 2);
     }
 }

@@ -1,6 +1,6 @@
 // src/config.rs
 use crate::types::PowerPlan;
-use anyhow::Result;
+use anyhow::Result as AnyResult;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -9,6 +9,70 @@ pub struct Config {
     pub general: GeneralConfig,
     pub autostart: AutostartConfig,
     pub watchlist: WatchlistConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PlanTimeRangeMode {
+    MatchUsageTrend,
+    AllRetained,
+}
+
+impl Default for PlanTimeRangeMode {
+    fn default() -> Self {
+        Self::MatchUsageTrend
+    }
+}
+
+impl<'de> Deserialize<'de> for PlanTimeRangeMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)
+            .unwrap_or(toml::Value::String("match_usage_trend".to_string()));
+        let mode = value
+            .as_str()
+            .map(|value| value.to_ascii_lowercase())
+            .map(|value| match value.as_str() {
+                "all_retained" => Self::AllRetained,
+                _ => Self::MatchUsageTrend,
+            })
+            .unwrap_or_default();
+        Ok(mode)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum AppearanceMode {
+    System,
+    Light,
+    Dark,
+}
+
+impl Default for AppearanceMode {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+impl<'de> Deserialize<'de> for AppearanceMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)
+            .unwrap_or(toml::Value::String("system".to_string()));
+        let mode = value
+            .as_str()
+            .map(|value| value.to_ascii_lowercase())
+            .map(|value| match value.as_str() {
+                "light" => Self::Light,
+                "dark" => Self::Dark,
+                _ => Self::System,
+            })
+            .unwrap_or_default();
+        Ok(mode)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +90,15 @@ pub struct GeneralConfig {
     pub low_power_cpu_threshold_percent: u8,
     #[serde(default = "default_low_power_cpu_quiet_window_seconds")]
     pub low_power_cpu_quiet_window_seconds: u64,
+    #[serde(
+        default = "default_usage_trend_window_minutes",
+        deserialize_with = "deserialize_usage_trend_window_minutes"
+    )]
+    pub usage_trend_window_minutes: u64,
+    #[serde(default)]
+    pub plan_time_range_mode: PlanTimeRangeMode,
+    #[serde(default)]
+    pub appearance_mode: AppearanceMode,
     pub promote_on_battery: bool,
     pub show_tray_balloon_on_switch: bool,
 }
@@ -38,6 +111,32 @@ fn default_low_power_cpu_threshold_percent() -> u8 {
 }
 fn default_low_power_cpu_quiet_window_seconds() -> u64 {
     60
+}
+fn default_usage_trend_window_minutes() -> u64 {
+    15
+}
+
+fn is_supported_usage_trend_window_minutes(value: u64) -> bool {
+    matches!(value, 15 | 30 | 60 | 90 | 120)
+}
+
+fn deserialize_usage_trend_window_minutes<'de, D>(
+    deserializer: D,
+) -> std::result::Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer).unwrap_or(toml::Value::Integer(
+        default_usage_trend_window_minutes() as i64,
+    ));
+    let minutes = value
+        .as_integer()
+        .unwrap_or(default_usage_trend_window_minutes() as i64) as u64;
+    if is_supported_usage_trend_window_minutes(minutes) {
+        Ok(minutes)
+    } else {
+        Ok(default_usage_trend_window_minutes())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +163,9 @@ impl Default for Config {
                 idle_wait_seconds: default_idle_wait_seconds(),
                 low_power_cpu_threshold_percent: default_low_power_cpu_threshold_percent(),
                 low_power_cpu_quiet_window_seconds: default_low_power_cpu_quiet_window_seconds(),
+                usage_trend_window_minutes: default_usage_trend_window_minutes(),
+                plan_time_range_mode: PlanTimeRangeMode::default(),
+                appearance_mode: AppearanceMode::default(),
                 promote_on_battery: false,
                 show_tray_balloon_on_switch: true,
             },
@@ -95,7 +197,7 @@ pub fn load_or_default() -> (Config, bool) {
     (config, false)
 }
 
-pub fn save(config: &Config) -> Result<()> {
+pub fn save(config: &Config) -> AnyResult<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -150,6 +252,12 @@ mod tests {
         assert_eq!(c.general.idle_wait_seconds, 600);
         assert_eq!(c.general.low_power_cpu_threshold_percent, 10);
         assert_eq!(c.general.low_power_cpu_quiet_window_seconds, 60);
+        assert_eq!(c.general.usage_trend_window_minutes, 15);
+        assert_eq!(
+            c.general.plan_time_range_mode,
+            PlanTimeRangeMode::MatchUsageTrend
+        );
+        assert_eq!(c.general.appearance_mode, AppearanceMode::System);
         assert!(!c.general.promote_on_battery);
         assert!(c.watchlist.processes.is_empty());
         assert!(!c.autostart.registered);
@@ -227,6 +335,9 @@ performance_plan_guid = "perf-guid"
 idle_wait_minutes = 10
 low_power_cpu_threshold_percent = 10
 low_power_cpu_quiet_window_seconds = 60
+usage_trend_window_minutes = 90
+plan_time_range_mode = "all_retained"
+appearance_mode = "light"
 promote_on_battery = false
 show_tray_balloon_on_switch = true
 
@@ -241,6 +352,47 @@ processes = []
         migrate_legacy_idle_wait(text, &mut c);
 
         assert_eq!(c.general.idle_wait_seconds, 600);
+        assert_eq!(c.general.usage_trend_window_minutes, 90);
+        assert_eq!(
+            c.general.plan_time_range_mode,
+            PlanTimeRangeMode::AllRetained
+        );
+        assert_eq!(c.general.appearance_mode, AppearanceMode::Light);
+    }
+
+    #[test]
+    fn test_invalid_dashboard_preferences_fall_back_to_defaults() {
+        let text = r#"
+[general]
+poll_interval_ms = 500
+hold_performance_seconds = 25
+standard_plan_guid = "standard-guid"
+low_power_plan_guid = "low-guid"
+performance_plan_guid = "perf-guid"
+idle_wait_seconds = 600
+low_power_cpu_threshold_percent = 10
+low_power_cpu_quiet_window_seconds = 60
+usage_trend_window_minutes = 17
+plan_time_range_mode = "lifetime"
+appearance_mode = "sepia"
+promote_on_battery = false
+show_tray_balloon_on_switch = true
+
+[autostart]
+registered = false
+
+[watchlist]
+processes = []
+"#;
+
+        let c: Config = toml::from_str(text).unwrap();
+
+        assert_eq!(c.general.usage_trend_window_minutes, 15);
+        assert_eq!(
+            c.general.plan_time_range_mode,
+            PlanTimeRangeMode::MatchUsageTrend
+        );
+        assert_eq!(c.general.appearance_mode, AppearanceMode::System);
     }
 
     #[test]

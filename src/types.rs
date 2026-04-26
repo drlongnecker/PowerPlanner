@@ -42,6 +42,22 @@ pub enum CpuHistoryPlanKind {
 }
 
 impl CpuHistoryPlanKind {
+    pub fn from_storage(value: i64) -> Self {
+        match value {
+            0 => Self::LowPower,
+            2 => Self::Performance,
+            _ => Self::Standard,
+        }
+    }
+
+    pub fn storage_value(self) -> i64 {
+        match self {
+            Self::LowPower => 0,
+            Self::Standard => 1,
+            Self::Performance => 2,
+        }
+    }
+
     pub fn color(self) -> Color32 {
         match self {
             Self::LowPower => Color32::from_rgb(0xC9, 0xCB, 0xA3),

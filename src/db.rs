@@ -1,9 +1,11 @@
 // src/db.rs
-use crate::types::PowerEvent;
+use crate::types::{CpuHistoryPoint, PowerEvent};
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
+
+const DASHBOARD_SAMPLE_RETENTION_DAYS: i64 = 60;
 
 pub fn db_path() -> PathBuf {
     dirs::data_local_dir()
@@ -35,6 +37,15 @@ fn migrate(conn: &Connection) -> Result<()> {
             battery_pct INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_power_events_ts ON power_events(ts);
+        CREATE TABLE IF NOT EXISTS dashboard_samples (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              INTEGER NOT NULL,
+            average_percent REAL    NOT NULL,
+            plan_kind       INTEGER NOT NULL,
+            plan_name       TEXT    NOT NULL,
+            trigger         TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dashboard_samples_ts ON dashboard_samples(ts);
     ",
     )?;
     Ok(())
@@ -77,6 +88,72 @@ pub fn query_recent(conn: &Connection, limit: usize) -> Result<Vec<PowerEvent>> 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+pub fn insert_dashboard_sample(conn: &Connection, sample: &CpuHistoryPoint) -> Result<()> {
+    conn.execute(
+        "INSERT INTO dashboard_samples (ts, average_percent, plan_kind, plan_name, trigger)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            sample.ts.timestamp_millis(),
+            sample.average_percent,
+            sample.plan_kind.storage_value(),
+            sample.plan_name,
+            sample.trigger,
+        ],
+    )?;
+    prune_dashboard_samples(conn, sample.ts)?;
+    Ok(())
+}
+
+pub fn query_dashboard_samples_recent(
+    conn: &Connection,
+    minutes: i64,
+) -> Result<Vec<CpuHistoryPoint>> {
+    let threshold = Local::now() - chrono::Duration::minutes(minutes.max(1));
+    let mut stmt = conn.prepare(
+        "SELECT ts, average_percent, plan_kind, plan_name, trigger
+         FROM dashboard_samples
+         WHERE ts >= ?1
+         ORDER BY ts ASC",
+    )?;
+    let rows = stmt.query_map(params![threshold.timestamp_millis()], |row| {
+        Ok(CpuHistoryPoint {
+            ts: Local.timestamp_millis_opt(row.get(0)?).unwrap(),
+            average_percent: row.get(1)?,
+            plan_kind: crate::types::CpuHistoryPlanKind::from_storage(row.get(2)?),
+            plan_name: row.get(3)?,
+            trigger: row.get(4)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn query_all_dashboard_samples(conn: &Connection) -> Result<Vec<CpuHistoryPoint>> {
+    let mut stmt = conn.prepare(
+        "SELECT ts, average_percent, plan_kind, plan_name, trigger
+         FROM dashboard_samples
+         ORDER BY ts ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CpuHistoryPoint {
+            ts: Local.timestamp_millis_opt(row.get(0)?).unwrap(),
+            average_percent: row.get(1)?,
+            plan_kind: crate::types::CpuHistoryPlanKind::from_storage(row.get(2)?),
+            plan_name: row.get(3)?,
+            trigger: row.get(4)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn prune_dashboard_samples(conn: &Connection, now: chrono::DateTime<Local>) -> Result<usize> {
+    let cutoff = now - chrono::Duration::days(DASHBOARD_SAMPLE_RETENTION_DAYS);
+    conn.execute(
+        "DELETE FROM dashboard_samples WHERE ts < ?1",
+        params![cutoff.timestamp_millis()],
+    )
+    .map_err(Into::into)
+}
+
 pub fn export_csv(conn: &Connection) -> Result<String> {
     let mut stmt = conn.prepare(
         "SELECT ts, plan_name, trigger, on_battery, battery_pct
@@ -114,7 +191,8 @@ pub fn export_csv(conn: &Connection) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Local;
+    use crate::types::CpuHistoryPlanKind;
+    use chrono::{Duration, Local};
 
     fn in_memory() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -130,6 +208,22 @@ mod tests {
             trigger: trigger.to_string(),
             on_battery: false,
             battery_pct: None,
+        }
+    }
+
+    fn make_dashboard_sample(
+        ts: chrono::DateTime<Local>,
+        plan_name: &str,
+        trigger: &str,
+        average_percent: f32,
+        plan_kind: CpuHistoryPlanKind,
+    ) -> CpuHistoryPoint {
+        CpuHistoryPoint {
+            ts,
+            average_percent,
+            plan_kind,
+            plan_name: plan_name.to_string(),
+            trigger: trigger.to_string(),
         }
     }
 
@@ -171,5 +265,108 @@ mod tests {
         assert!(csv.starts_with("timestamp,plan_name,trigger,on_battery,battery_pct\n"));
         assert!(csv.contains("Balanced"));
         assert!(csv.contains("startup"));
+    }
+
+    #[test]
+    fn test_insert_and_query_recent_dashboard_samples() {
+        let conn = in_memory();
+        let now = Local::now();
+        insert_dashboard_sample(
+            &conn,
+            &make_dashboard_sample(
+                now - Duration::minutes(20),
+                "Balanced",
+                "startup",
+                10.0,
+                CpuHistoryPlanKind::Standard,
+            ),
+        )
+        .unwrap();
+        insert_dashboard_sample(
+            &conn,
+            &make_dashboard_sample(
+                now - Duration::minutes(5),
+                "High Performance",
+                "rustc.exe",
+                33.0,
+                CpuHistoryPlanKind::Performance,
+            ),
+        )
+        .unwrap();
+
+        let recent = query_dashboard_samples_recent(&conn, 15).unwrap();
+
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].plan_name, "High Performance");
+        assert_eq!(recent[0].plan_kind, CpuHistoryPlanKind::Performance);
+    }
+
+    #[test]
+    fn test_query_all_dashboard_samples_returns_ordered_rows() {
+        let conn = in_memory();
+        let now = Local::now();
+        insert_dashboard_sample(
+            &conn,
+            &make_dashboard_sample(
+                now - Duration::minutes(2),
+                "Balanced",
+                "startup",
+                9.0,
+                CpuHistoryPlanKind::Standard,
+            ),
+        )
+        .unwrap();
+        insert_dashboard_sample(
+            &conn,
+            &make_dashboard_sample(
+                now - Duration::minutes(1),
+                "Power Saver",
+                "idle + quiet cpu",
+                4.0,
+                CpuHistoryPlanKind::LowPower,
+            ),
+        )
+        .unwrap();
+
+        let all = query_all_dashboard_samples(&conn).unwrap();
+
+        assert_eq!(all.len(), 2);
+        assert!(all[0].ts <= all[1].ts);
+        assert_eq!(all[1].plan_kind, CpuHistoryPlanKind::LowPower);
+    }
+
+    #[test]
+    fn test_insert_dashboard_sample_prunes_rows_older_than_retention_window() {
+        let conn = in_memory();
+        let now = Local::now();
+        conn.execute(
+            "INSERT INTO dashboard_samples (ts, average_percent, plan_kind, plan_name, trigger)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                (now - Duration::days(61)).timestamp_millis(),
+                3.0_f32,
+                CpuHistoryPlanKind::LowPower.storage_value(),
+                "Power Saver",
+                "idle",
+            ],
+        )
+        .unwrap();
+
+        insert_dashboard_sample(
+            &conn,
+            &make_dashboard_sample(
+                now,
+                "Balanced",
+                "startup",
+                8.0,
+                CpuHistoryPlanKind::Standard,
+            ),
+        )
+        .unwrap();
+
+        let all = query_all_dashboard_samples(&conn).unwrap();
+
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].plan_name, "Balanced");
     }
 }

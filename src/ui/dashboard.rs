@@ -1,16 +1,17 @@
 // src/ui/dashboard.rs
-use crate::config::Config;
+use crate::config::{Config, PlanTimeRangeMode};
+use crate::db;
 use crate::types::{AppState, CpuHistoryPoint, MonitorCommand};
 use egui::{self, Align, Align2, Color32, Layout, Pos2, RichText, Sense, Shape, Stroke, Ui};
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
-const CPU_GRAPH_MAX_WIDTH: f32 = 600.0;
 const CPU_GRAPH_HEIGHT: f32 = 300.0;
-const CPU_GRAPH_WINDOW_MINUTES: i64 = 15;
 const DASHBOARD_TILE_SPACING: f32 = 10.0;
 const DASHBOARD_CONTENT_INSET: f32 = 10.0;
 const CPU_GRAPH_Y_MAX: f32 = 100.0;
+const CPU_GATE_COLOR: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
+const CPU_TREND_COLOR: Color32 = Color32::from_rgb(0x00, 0xA9, 0xA5);
 
 #[derive(Clone, Copy)]
 enum DashboardTileWidth {
@@ -33,27 +34,94 @@ mod tests {
     #[test]
     fn plan_time_breakdown_collapses_single_plan() {
         let now = Local::now();
-        let mut history = std::collections::VecDeque::new();
-        history.push_back(CpuHistoryPoint {
-            ts: now,
-            average_percent: 10.0,
-            plan_kind: CpuHistoryPlanKind::Standard,
-            plan_name: "Balanced".into(),
-            trigger: "startup".into(),
-        });
-        history.push_back(CpuHistoryPoint {
-            ts: now + Duration::minutes(5),
-            average_percent: 12.0,
-            plan_kind: CpuHistoryPlanKind::Standard,
-            plan_name: "Balanced".into(),
-            trigger: "startup".into(),
-        });
+        let history = vec![
+            CpuHistoryPoint {
+                ts: now,
+                average_percent: 10.0,
+                plan_kind: CpuHistoryPlanKind::Standard,
+                plan_name: "Balanced".into(),
+                trigger: "startup".into(),
+            },
+            CpuHistoryPoint {
+                ts: now + Duration::minutes(5),
+                average_percent: 12.0,
+                plan_kind: CpuHistoryPlanKind::Standard,
+                plan_name: "Balanced".into(),
+                trigger: "startup".into(),
+            },
+        ];
 
         let breakdown = build_plan_time_breakdown(&history);
 
         assert_eq!(breakdown.len(), 1);
         assert_eq!(breakdown[0].name, "Balanced");
         assert_eq!(breakdown[0].seconds, 300.0);
+    }
+
+    #[test]
+    fn plan_time_segments_merge_consecutive_matching_plans() {
+        let now = Local::now();
+        let history = vec![
+            CpuHistoryPoint {
+                ts: now,
+                average_percent: 10.0,
+                plan_kind: CpuHistoryPlanKind::Standard,
+                plan_name: "Balanced".into(),
+                trigger: "startup".into(),
+            },
+            CpuHistoryPoint {
+                ts: now + Duration::minutes(5),
+                average_percent: 12.0,
+                plan_kind: CpuHistoryPlanKind::Standard,
+                plan_name: "Balanced".into(),
+                trigger: "startup".into(),
+            },
+            CpuHistoryPoint {
+                ts: now + Duration::minutes(10),
+                average_percent: 8.0,
+                plan_kind: CpuHistoryPlanKind::LowPower,
+                plan_name: "Power saver".into(),
+                trigger: "idle".into(),
+            },
+            CpuHistoryPoint {
+                ts: now + Duration::minutes(12),
+                average_percent: 12.0,
+                plan_kind: CpuHistoryPlanKind::Standard,
+                plan_name: "Balanced".into(),
+                trigger: "startup".into(),
+            },
+            CpuHistoryPoint {
+                ts: now + Duration::minutes(15),
+                average_percent: 16.0,
+                plan_kind: CpuHistoryPlanKind::Performance,
+                plan_name: "High Performance".into(),
+                trigger: "rustc.exe".into(),
+            },
+            CpuHistoryPoint {
+                ts: now + Duration::minutes(20),
+                average_percent: 15.0,
+                plan_kind: CpuHistoryPlanKind::Performance,
+                plan_name: "High Performance".into(),
+                trigger: "rustc.exe".into(),
+            },
+        ];
+
+        let segments = build_plan_time_segments(&history);
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].seconds, 480.0);
+        assert_eq!(segments[1].seconds, 300.0);
+        assert_eq!(segments[2].seconds, 120.0);
+    }
+
+    #[test]
+    fn format_duration_uses_hours_for_large_values() {
+        assert_eq!(format_duration(12_052.0), "3h 20m");
+    }
+
+    #[test]
+    fn format_duration_uses_days_for_very_large_values() {
+        assert_eq!(format_duration(200_000.0), "2d 7h");
     }
 }
 
@@ -68,115 +136,240 @@ pub fn render(
         .as_ref()
         .map(|p| p.name.as_str())
         .unwrap_or("Unknown");
-    ui.heading(format!("Current Plan: {}", plan_name));
-    ui.add_space(10.0);
+    let (usage_history, plan_time_history) = load_dashboard_histories(config);
+    let mut dashboard_preferences_changed = false;
+    let mut usage_window_minutes = config.general.usage_trend_window_minutes;
+    let mut plan_time_range_mode = config.general.plan_time_range_mode;
 
     dashboard_content(ui, |ui| {
-        dashboard_tile(ui, "Overview", DashboardTileWidth::Full, |ui| {
-            if let Some(ref forced) = state.forced_plan {
-                ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::YELLOW, format!("Forced: {}", forced.name));
-                    if ui.button("Resume Auto").clicked() {
-                        let _ = tx.send(MonitorCommand::ForcePlan(None));
-                    }
-                });
-                ui.add_space(6.0);
-            }
+        dashboard_tile(
+            ui,
+            "Overview",
+            DashboardTileWidth::Full,
+            |_| {},
+            |ui| {
+                if let Some(ref forced) = state.forced_plan {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(egui::Color32::YELLOW, format!("Forced: {}", forced.name));
+                        if ui.button("Resume Auto").clicked() {
+                            let _ = tx.send(MonitorCommand::ForcePlan(None));
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
 
-            if let Some(ref err) = state.last_error {
-                ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-                ui.add_space(6.0);
-            }
+                if let Some(ref err) = state.last_error {
+                    ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
+                    ui.add_space(6.0);
+                }
 
-            egui::Grid::new("dashboard_overview_grid")
-                .num_columns(2)
-                .spacing([18.0, 10.0])
-                .min_col_width(140.0)
-                .show(ui, |ui| {
-                    summary_row(ui, "Power Source", power_source_text(state).as_str());
-                    summary_row(ui, "Monitor", monitor_status_text(state));
+                egui::Grid::new("dashboard_overview_grid")
+                    .num_columns(2)
+                    .spacing([18.0, 10.0])
+                    .min_col_width(140.0)
+                    .show(ui, |ui| {
+                        summary_row(ui, "Current Plan", plan_name);
+                        summary_row(ui, "Power Source", power_source_text(state).as_str());
+                        summary_row(ui, "Monitor", monitor_status_text(state));
 
-                    if !state.matched_processes.is_empty() {
-                        summary_row(ui, "Active Triggers", &state.matched_processes.join(", "));
-                    }
+                        if !state.matched_processes.is_empty() {
+                            summary_row(ui, "Active Triggers", &state.matched_processes.join(", "));
+                        }
 
-                    if let Some(r) = state.hold_remaining_secs.filter(|r| *r > 0.0) {
-                        summary_row(ui, "Hold Timer", &format!("{:.0}s remaining", r));
-                    }
+                        if let Some(r) = state.hold_remaining_secs.filter(|r| *r > 0.0) {
+                            summary_row(ui, "Hold Timer", &format!("{:.0}s remaining", r));
+                        }
 
-                    if let Some(idle_for_secs) = state.idle_for_secs {
+                        if let Some(idle_for_secs) = state.idle_for_secs {
+                            summary_row(
+                                ui,
+                                "Idle",
+                                &format!(
+                                    "{:.0}s / {}s",
+                                    idle_for_secs, config.general.idle_wait_seconds
+                                ),
+                            );
+                        }
+
+                        let cpu_text = if let Some(cpu_average_percent) = state.cpu_average_percent
+                        {
+                            format!(
+                                "{:.1}% / {}%",
+                                cpu_average_percent, config.general.low_power_cpu_threshold_percent
+                            )
+                        } else {
+                            format!(
+                                "Gathering samples ({}s window)",
+                                config.general.low_power_cpu_quiet_window_seconds
+                            )
+                        };
+                        summary_row(ui, "CPU Quiet Window Avg", &cpu_text);
+
                         summary_row(
                             ui,
-                            "Idle",
+                            "Low Power Gates",
                             &format!(
-                                "{:.0}s / {}s",
-                                idle_for_secs, config.general.idle_wait_seconds
+                                "input={}  cpu={}",
+                                if state.low_power_ready_input {
+                                    "ready"
+                                } else {
+                                    "waiting"
+                                },
+                                if state.low_power_ready_cpu {
+                                    "ready"
+                                } else {
+                                    "waiting"
+                                }
                             ),
                         );
-                    }
-
-                    let cpu_text = if let Some(cpu_average_percent) = state.cpu_average_percent {
-                        format!(
-                            "{:.1}% / {}%",
-                            cpu_average_percent, config.general.low_power_cpu_threshold_percent
-                        )
-                    } else {
-                        format!(
-                            "Gathering samples ({}s window)",
-                            config.general.low_power_cpu_quiet_window_seconds
-                        )
-                    };
-                    summary_row(ui, "CPU Quiet Window Avg", &cpu_text);
-
-                    summary_row(
-                        ui,
-                        "Low Power Gates",
-                        &format!(
-                            "input={}  cpu={}",
-                            if state.low_power_ready_input {
-                                "ready"
-                            } else {
-                                "waiting"
-                            },
-                            if state.low_power_ready_cpu {
-                                "ready"
-                            } else {
-                                "waiting"
-                            }
-                        ),
-                    );
-                });
-        });
-
-        ui.add_space(10.0);
-        dashboard_two_up(
-            ui,
-            |ui| {
-                dashboard_tile(ui, "Usage Trend", DashboardTileWidth::Full, |ui| {
-                    ui.label(
-                        RichText::new("Quiet-window CPU average over the last 15 minutes")
-                            .weak()
-                            .size(13.0),
-                    );
-                    ui.add_space(8.0);
-                    render_cpu_history_chart(ui, state, config);
-                });
-            },
-            |ui| {
-                dashboard_tile(ui, "Plan Time", DashboardTileWidth::Full, |ui| {
-                    ui.label(
-                        RichText::new("Share of sampled time by active plan")
-                            .weak()
-                            .size(13.0),
-                    );
-                    ui.add_space(8.0);
-                    render_plan_time_pie(ui, state);
-                });
+                    });
             },
         );
+
+        ui.add_space(10.0);
+        let row_width = ui.available_width();
+        let tile_width = tile_width_for_available(row_width, DashboardTileWidth::Half);
+        ui.horizontal_top(|ui| {
+            let usage_window_label = usage_window_minutes;
+            dashboard_tile(
+                ui,
+                "Usage Trend",
+                DashboardTileWidth::Half,
+                |ui| {
+                    usage_trend_window_selector(
+                        ui,
+                        &mut usage_window_minutes,
+                        &mut dashboard_preferences_changed,
+                    )
+                },
+                |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Quiet-window CPU average over the last {} minutes",
+                            usage_window_label
+                        ))
+                        .weak()
+                        .size(13.0),
+                    );
+                    ui.add_space(8.0);
+                    render_cpu_history_chart(ui, &usage_history, config);
+                },
+            );
+            ui.add_space(DASHBOARD_TILE_SPACING);
+            ui.allocate_ui_with_layout(
+                egui::vec2(tile_width, 0.0),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    let plan_time_subtitle_text = plan_time_subtitle(plan_time_range_mode);
+                    dashboard_tile(
+                        ui,
+                        "Plan Time",
+                        DashboardTileWidth::Full,
+                        |ui| {
+                            plan_time_range_selector(
+                                ui,
+                                &mut plan_time_range_mode,
+                                &mut dashboard_preferences_changed,
+                            )
+                        },
+                        |ui| {
+                            ui.label(RichText::new(plan_time_subtitle_text).weak().size(13.0));
+                            ui.add_space(8.0);
+                            render_plan_time_timeline(ui, &plan_time_history);
+                        },
+                    );
+                },
+            );
+        });
     });
 
+    if dashboard_preferences_changed {
+        config.general.usage_trend_window_minutes = usage_window_minutes;
+        config.general.plan_time_range_mode = plan_time_range_mode;
+        let _ = crate::config::save(config);
+        let _ = tx.send(MonitorCommand::UpdateConfig(config.clone()));
+    }
+
     ui.add_space(10.0);
+}
+
+fn load_dashboard_histories(config: &Config) -> (Vec<CpuHistoryPoint>, Vec<CpuHistoryPoint>) {
+    let Ok(conn) = db::open() else {
+        return (vec![], vec![]);
+    };
+
+    let usage =
+        db::query_dashboard_samples_recent(&conn, config.general.usage_trend_window_minutes as i64)
+            .unwrap_or_default();
+    let plan_time = match config.general.plan_time_range_mode {
+        PlanTimeRangeMode::MatchUsageTrend => usage.clone(),
+        PlanTimeRangeMode::AllRetained => {
+            db::query_all_dashboard_samples(&conn).unwrap_or_default()
+        }
+    };
+    (usage, plan_time)
+}
+
+fn plan_time_subtitle(plan_time_range_mode: PlanTimeRangeMode) -> &'static str {
+    match plan_time_range_mode {
+        PlanTimeRangeMode::MatchUsageTrend => {
+            "Share of sampled time by active plan for the selected usage range"
+        }
+        PlanTimeRangeMode::AllRetained => {
+            "Share of sampled time by active plan across all retained dashboard data"
+        }
+    }
+}
+
+fn usage_trend_window_selector(ui: &mut Ui, usage_window_minutes: &mut u64, changed: &mut bool) {
+    egui::ComboBox::from_id_source("usage_trend_window_combo")
+        .selected_text(format!("{}m", *usage_window_minutes))
+        .width(96.0)
+        .show_ui(ui, |ui| {
+            for minutes in [15_u64, 30, 60, 90, 120] {
+                if ui
+                    .selectable_value(usage_window_minutes, minutes, format!("{}m", minutes))
+                    .changed()
+                {
+                    *changed = true;
+                }
+            }
+        });
+}
+
+fn plan_time_range_selector(
+    ui: &mut Ui,
+    plan_time_range_mode: &mut PlanTimeRangeMode,
+    changed: &mut bool,
+) {
+    egui::ComboBox::from_id_source("plan_time_range_combo")
+        .selected_text(match *plan_time_range_mode {
+            PlanTimeRangeMode::MatchUsageTrend => "Match Usage Trend",
+            PlanTimeRangeMode::AllRetained => "All retained",
+        })
+        .width(150.0)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_value(
+                    plan_time_range_mode,
+                    PlanTimeRangeMode::MatchUsageTrend,
+                    "Match Usage Trend",
+                )
+                .changed()
+            {
+                *changed = true;
+            }
+            if ui
+                .selectable_value(
+                    plan_time_range_mode,
+                    PlanTimeRangeMode::AllRetained,
+                    "All retained",
+                )
+                .changed()
+            {
+                *changed = true;
+            }
+        });
 }
 
 fn dashboard_content(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
@@ -196,16 +389,18 @@ fn dashboard_tile(
     ui: &mut Ui,
     title: &str,
     width: DashboardTileWidth,
+    add_actions: impl FnOnce(&mut Ui),
     add_contents: impl FnOnce(&mut Ui),
 ) {
     let tile_width = tile_width_for_available(ui.available_width(), width);
-    show_dashboard_tile(ui, title, tile_width, add_contents);
+    show_dashboard_tile(ui, title, tile_width, add_actions, add_contents);
 }
 
 fn show_dashboard_tile(
     ui: &mut Ui,
     title: &str,
     tile_width: f32,
+    add_actions: impl FnOnce(&mut Ui),
     add_contents: impl FnOnce(&mut Ui),
 ) {
     ui.allocate_ui_with_layout(
@@ -219,7 +414,12 @@ fn show_dashboard_tile(
                 .inner_margin(egui::Margin::symmetric(14.0, 12.0))
                 .show(ui, |ui| {
                     ui.set_width(tile_width - 28.0);
-                    ui.heading(title);
+                    ui.horizontal(|ui| {
+                        ui.heading(title);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            add_actions(ui);
+                        });
+                    });
                     ui.add_space(10.0);
                     add_contents(ui);
                 });
@@ -232,24 +432,6 @@ fn tile_width_for_available(available: f32, width: DashboardTileWidth) -> f32 {
         DashboardTileWidth::Full => available,
         DashboardTileWidth::Half => ((available - DASHBOARD_TILE_SPACING).max(200.0)) / 2.0,
     }
-}
-
-fn dashboard_two_up(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
-    let row_width = ui.available_width();
-    let tile_width = tile_width_for_available(row_width, DashboardTileWidth::Half);
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(tile_width, 0.0),
-            Layout::top_down(Align::Min),
-            left,
-        );
-        ui.add_space(DASHBOARD_TILE_SPACING);
-        ui.allocate_ui_with_layout(
-            egui::vec2(tile_width, 0.0),
-            Layout::top_down(Align::Min),
-            right,
-        );
-    });
 }
 
 fn summary_row(ui: &mut Ui, label: &str, value: &str) {
@@ -282,8 +464,8 @@ fn monitor_status_text(state: &AppState) -> &'static str {
     }
 }
 
-fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
-    let desired_width = ui.available_width().min(CPU_GRAPH_MAX_WIDTH).max(160.0);
+fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &Config) {
+    let desired_width = ui.available_width().max(160.0);
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(desired_width, CPU_GRAPH_HEIGHT), Sense::hover());
     let painter = ui.painter_at(rect);
@@ -291,7 +473,7 @@ fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
     painter.rect_filled(rect, 6.0, visuals.extreme_bg_color);
     painter.rect_stroke(rect, 6.0, visuals.widgets.noninteractive.bg_stroke);
 
-    if state.cpu_history.is_empty() {
+    if history.is_empty() {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -310,11 +492,10 @@ fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
         Pos2::new(rect.right() - 12.0, rect.bottom() - 12.0),
     );
     let threshold = config.general.low_power_cpu_threshold_percent as f32;
-    let history: Vec<_> = state.cpu_history.iter().cloned().collect();
     let y_max = CPU_GRAPH_Y_MAX;
-
-    let latest = history.last().unwrap().ts;
-    let window_start = latest - chrono::Duration::minutes(CPU_GRAPH_WINDOW_MINUTES);
+    let latest = chrono::Local::now();
+    let window_start =
+        latest - chrono::Duration::minutes(config.general.usage_trend_window_minutes as i64);
     let total_millis = (latest - window_start).num_milliseconds().max(1) as f32;
 
     let to_x = |ts: chrono::DateTime<chrono::Local>| {
@@ -350,14 +531,14 @@ fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
             Pos2::new(plot_rect.left(), threshold_y),
             Pos2::new(plot_rect.right(), threshold_y),
         ],
-        Stroke::new(1.0, Color32::from_gray(120)),
+        Stroke::new(1.5, CPU_GATE_COLOR),
     );
     painter.text(
         Pos2::new(plot_rect.left(), threshold_y - 4.0),
         Align2::LEFT_BOTTOM,
         format!("{}%", config.general.low_power_cpu_threshold_percent),
         egui::TextStyle::Small.resolve(ui.style()),
-        visuals.weak_text_color(),
+        CPU_GATE_COLOR,
     );
 
     if history.len() == 1 {
@@ -368,7 +549,7 @@ fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
             [Pos2::new(x, plot_rect.bottom()), Pos2::new(x, y)],
             Stroke::new(2.0, point.plan_kind.color().gamma_multiply(0.85)),
         );
-        painter.circle_filled(Pos2::new(x, y), 3.5, visuals.widgets.active.fg_stroke.color);
+        painter.circle_filled(Pos2::new(x, y), 3.5, CPU_TREND_COLOR);
         return;
     }
 
@@ -398,7 +579,7 @@ fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
         .collect();
     painter.add(Shape::line(
         line_points.clone(),
-        Stroke::new(2.0, visuals.widgets.active.fg_stroke.color),
+        Stroke::new(2.0, CPU_TREND_COLOR),
     ));
 
     if let Some(pointer_pos) = response.hover_pos().filter(|pos| plot_rect.contains(*pos)) {
@@ -430,8 +611,8 @@ fn render_cpu_history_chart(ui: &mut Ui, state: &AppState, config: &Config) {
     }
 }
 
-fn render_plan_time_pie(ui: &mut Ui, state: &AppState) {
-    let desired_width = ui.available_width().min(CPU_GRAPH_MAX_WIDTH).max(160.0);
+fn render_plan_time_timeline(ui: &mut Ui, history: &[CpuHistoryPoint]) {
+    let desired_width = ui.available_width().max(160.0);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(desired_width, CPU_GRAPH_HEIGHT), Sense::hover());
     let painter = ui.painter_at(rect);
@@ -439,8 +620,9 @@ fn render_plan_time_pie(ui: &mut Ui, state: &AppState) {
     painter.rect_filled(rect, 6.0, visuals.extreme_bg_color);
     painter.rect_stroke(rect, 6.0, visuals.widgets.noninteractive.bg_stroke);
 
-    let breakdown = build_plan_time_breakdown(&state.cpu_history);
-    if breakdown.is_empty() {
+    let segments = build_plan_time_segments(history);
+    let breakdown = build_plan_time_breakdown(history);
+    if breakdown.is_empty() || segments.is_empty() {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -451,70 +633,60 @@ fn render_plan_time_pie(ui: &mut Ui, state: &AppState) {
         return;
     }
 
-    let center = Pos2::new(rect.left() + rect.width() * 0.33, rect.center().y);
-    let radius = rect.height().min(rect.width() * 0.45) * 0.28;
-    let total_seconds: f32 = breakdown.iter().map(|slice| slice.seconds).sum();
-
-    if breakdown.len() == 1 {
-        painter.circle_filled(center, radius, breakdown[0].color);
-        painter.circle_filled(center, radius * 0.52, visuals.extreme_bg_color);
-        render_plan_time_legend(
-            &painter,
-            rect,
-            center,
-            radius,
-            visuals,
-            &breakdown,
-            total_seconds,
-            ui,
-        );
-        return;
-    }
-
-    let mut start_angle = -std::f32::consts::FRAC_PI_2;
-
-    for slice in &breakdown {
-        let fraction = slice.seconds / total_seconds;
-        let end_angle = start_angle + fraction * std::f32::consts::TAU;
-        let mut points = vec![center];
-        let segments = ((fraction * 48.0).ceil() as usize).max(3);
-        for step in 0..=segments {
-            let t = start_angle + (end_angle - start_angle) * (step as f32 / segments as f32);
-            points.push(Pos2::new(
-                center.x + radius * t.cos(),
-                center.y + radius * t.sin(),
-            ));
-        }
-        painter.add(Shape::convex_polygon(points, slice.color, Stroke::NONE));
-        start_angle = end_angle;
-    }
-
-    painter.circle_filled(center, radius * 0.52, visuals.extreme_bg_color);
-
-    render_plan_time_legend(
-        &painter,
-        rect,
-        center,
-        radius,
-        visuals,
-        &breakdown,
-        total_seconds,
-        ui,
+    let timeline_rect = egui::Rect::from_min_max(
+        Pos2::new(rect.left() + 20.0, rect.top() + 26.0),
+        Pos2::new(rect.right() - 20.0, rect.top() + 92.0),
     );
+    let total_seconds: f32 = breakdown.iter().map(|slice| slice.seconds).sum();
+    let mut x = timeline_rect.left();
+    for (index, segment) in segments.iter().enumerate() {
+        let width = timeline_rect.width() * (segment.seconds / total_seconds);
+        let segment_rect = egui::Rect::from_min_max(
+            Pos2::new(x, timeline_rect.top()),
+            Pos2::new(
+                (x + width).min(timeline_rect.right()),
+                timeline_rect.bottom(),
+            ),
+        );
+        painter.rect_filled(
+            segment_rect,
+            segment_rounding(index, segments.len()),
+            segment.color,
+        );
+        x += width;
+    }
+    painter.rect_stroke(timeline_rect, 6.0, visuals.widgets.noninteractive.bg_stroke);
+
+    if let (Some(first), Some(last)) = (history.first(), history.last()) {
+        painter.text(
+            Pos2::new(timeline_rect.left(), timeline_rect.bottom() + 8.0),
+            Align2::LEFT_TOP,
+            first.ts.format("%Y-%m-%d %H:%M").to_string(),
+            egui::TextStyle::Small.resolve(ui.style()),
+            visuals.weak_text_color(),
+        );
+        painter.text(
+            Pos2::new(timeline_rect.right(), timeline_rect.bottom() + 8.0),
+            Align2::RIGHT_TOP,
+            last.ts.format("%Y-%m-%d %H:%M").to_string(),
+            egui::TextStyle::Small.resolve(ui.style()),
+            visuals.weak_text_color(),
+        );
+    }
+
+    render_plan_time_legend(&painter, rect, visuals, &breakdown, total_seconds, ui);
 }
 
 fn render_plan_time_legend(
     painter: &egui::Painter,
     rect: egui::Rect,
-    center: Pos2,
-    radius: f32,
     visuals: &egui::Visuals,
     breakdown: &[PlanTimeSlice],
     total_seconds: f32,
     ui: &Ui,
 ) {
-    let legend_x = center.x + radius + 28.0;
-    let mut legend_y = rect.top() + 28.0;
+    let legend_x = rect.left() + 22.0;
+    let mut legend_y = rect.top() + 126.0;
     for slice in breakdown {
         painter.rect_filled(
             egui::Rect::from_min_size(Pos2::new(legend_x, legend_y + 2.0), egui::vec2(10.0, 10.0)),
@@ -544,12 +716,25 @@ struct PlanTimeSlice {
     seconds: f32,
 }
 
-fn build_plan_time_breakdown(
-    history: &std::collections::VecDeque<CpuHistoryPoint>,
-) -> Vec<PlanTimeSlice> {
+#[derive(Clone)]
+struct PlanTimeSegment {
+    color: Color32,
+    seconds: f32,
+}
+
+fn build_plan_time_segments(history: &[CpuHistoryPoint]) -> Vec<PlanTimeSegment> {
+    build_plan_time_breakdown(history)
+        .into_iter()
+        .map(|slice| PlanTimeSegment {
+            color: slice.color,
+            seconds: slice.seconds,
+        })
+        .collect()
+}
+
+fn build_plan_time_breakdown(history: &[CpuHistoryPoint]) -> Vec<PlanTimeSlice> {
     let mut totals: BTreeMap<String, PlanTimeSlice> = BTreeMap::new();
-    let history_vec: Vec<_> = history.iter().cloned().collect();
-    for pair in history_vec.windows(2) {
+    for pair in history.windows(2) {
         let left = &pair[0];
         let right = &pair[1];
         let seconds = ((right.ts - left.ts).num_milliseconds().max(0) as f32) / 1000.0;
@@ -575,6 +760,23 @@ fn build_plan_time_breakdown(
 
 fn format_duration(seconds: f32) -> String {
     let total_seconds = seconds.round() as i64;
+    let total_minutes = total_seconds / 60;
+    let total_hours = total_minutes / 60;
+    let total_days = total_hours / 24;
+    if total_days > 0 {
+        let hours = total_hours % 24;
+        if hours > 0 {
+            return format!("{}d {}h", total_days, hours);
+        }
+        return format!("{}d", total_days);
+    }
+    if total_hours > 0 {
+        let minutes = total_minutes % 60;
+        if minutes > 0 {
+            return format!("{}h {}m", total_hours, minutes);
+        }
+        return format!("{}h", total_hours);
+    }
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     if minutes > 0 {
@@ -582,4 +784,21 @@ fn format_duration(seconds: f32) -> String {
     } else {
         format!("{}s", seconds)
     }
+}
+
+fn segment_rounding(index: usize, total_segments: usize) -> egui::Rounding {
+    if total_segments <= 1 {
+        return egui::Rounding::same(6.0);
+    }
+
+    let mut rounding = egui::Rounding::same(0.0);
+    if index == 0 {
+        rounding.nw = 6.0;
+        rounding.sw = 6.0;
+    }
+    if index + 1 == total_segments {
+        rounding.ne = 6.0;
+        rounding.se = 6.0;
+    }
+    rounding
 }

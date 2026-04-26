@@ -124,8 +124,15 @@ fn main() {
     if let Some(icon_data) = icon {
         viewport = viewport.with_icon(icon_data);
     }
+    let (follow_system_theme, default_theme) = match config.general.appearance_mode {
+        config::AppearanceMode::System => (true, eframe::Theme::Dark),
+        config::AppearanceMode::Light => (false, eframe::Theme::Light),
+        config::AppearanceMode::Dark => (false, eframe::Theme::Dark),
+    };
     let options = eframe::NativeOptions {
         viewport,
+        follow_system_theme,
+        default_theme,
         ..Default::default()
     };
 

@@ -1,5 +1,5 @@
 // src/app.rs
-use crate::config::Config;
+use crate::config::{AppearanceMode, Config};
 use crate::types::{AppState, MonitorCommand};
 use crate::ui::Nav;
 use eframe::egui;
@@ -17,6 +17,8 @@ pub struct PowerPlannerApp {
     waker_started: bool,
     last_tooltip_plan: String,
     last_nav: Nav,
+    last_applied_appearance: Option<AppearanceMode>,
+    last_system_theme: Option<eframe::Theme>,
 }
 
 impl PowerPlannerApp {
@@ -36,12 +38,16 @@ impl PowerPlannerApp {
             waker_started: false,
             last_tooltip_plan: String::new(),
             last_nav: Nav::default(),
+            last_applied_appearance: None,
+            last_system_theme: None,
         }
     }
 }
 
 impl eframe::App for PowerPlannerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.apply_appearance_if_needed(ctx, frame);
+
         // Spawn the tray-event thread once.
         if !self.waker_started {
             let ctx2 = ctx.clone();
@@ -107,6 +113,35 @@ impl eframe::App for PowerPlannerApp {
             ui.selectable_value(&mut self.nav, Nav::Settings, "Settings");
             ui.selectable_value(&mut self.nav, Nav::History, "Recent Events");
 
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Appearance").weak().size(12.0));
+            ui.horizontal(|ui| {
+                appearance_nav_button(
+                    ui,
+                    "🖥",
+                    "System theme",
+                    AppearanceMode::System,
+                    &mut self.config,
+                    &self.cmd_tx,
+                );
+                appearance_nav_button(
+                    ui,
+                    "☀",
+                    "Light theme",
+                    AppearanceMode::Light,
+                    &mut self.config,
+                    &self.cmd_tx,
+                );
+                appearance_nav_button(
+                    ui,
+                    "☾",
+                    "Dark theme",
+                    AppearanceMode::Dark,
+                    &mut self.config,
+                    &self.cmd_tx,
+                );
+            });
+
             // Watermark: paint logo at bottom-left of the nav panel, low opacity
             if let Some(ref tex) = self.bg_texture {
                 let panel_rect = ui.clip_rect();
@@ -124,7 +159,10 @@ impl eframe::App for PowerPlannerApp {
                     tex.id(),
                     img_rect,
                     uv,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 45),
+                    watermark_tint(resolved_theme(
+                        self.config.general.appearance_mode,
+                        self.last_system_theme,
+                    )),
                 );
             }
         });
@@ -156,6 +194,139 @@ impl eframe::App for PowerPlannerApp {
                 }
             }
         });
+    }
+}
+
+impl PowerPlannerApp {
+    fn apply_appearance_if_needed(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let appearance = self.config.general.appearance_mode;
+        let system_theme = frame.info().system_theme;
+        let needs_update = self.last_applied_appearance != Some(appearance)
+            || (appearance == AppearanceMode::System && self.last_system_theme != system_theme);
+
+        if !needs_update {
+            return;
+        }
+
+        let resolved_theme = resolved_theme(appearance, system_theme);
+        ctx.set_visuals(visuals_for_theme(resolved_theme));
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(system_theme_command(
+            appearance,
+        )));
+        self.last_applied_appearance = Some(appearance);
+        self.last_system_theme = system_theme;
+    }
+}
+
+fn resolved_theme(
+    appearance: AppearanceMode,
+    system_theme: Option<eframe::Theme>,
+) -> eframe::Theme {
+    match appearance {
+        AppearanceMode::System => system_theme.unwrap_or(eframe::Theme::Dark),
+        AppearanceMode::Light => eframe::Theme::Light,
+        AppearanceMode::Dark => eframe::Theme::Dark,
+    }
+}
+
+fn system_theme_command(appearance: AppearanceMode) -> egui::SystemTheme {
+    match appearance {
+        AppearanceMode::System => egui::SystemTheme::SystemDefault,
+        AppearanceMode::Light => egui::SystemTheme::Light,
+        AppearanceMode::Dark => egui::SystemTheme::Dark,
+    }
+}
+
+fn visuals_for_theme(theme: eframe::Theme) -> egui::Visuals {
+    let mut visuals = theme.egui_visuals();
+    match theme {
+        eframe::Theme::Dark => {
+            visuals.override_text_color = Some(egui::Color32::from_rgb(230, 235, 242));
+            visuals.panel_fill = egui::Color32::from_rgb(20, 24, 30);
+            visuals.faint_bg_color = egui::Color32::from_rgb(34, 40, 50);
+            visuals.extreme_bg_color = egui::Color32::from_rgb(14, 18, 24);
+            visuals.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(76, 86, 101);
+            visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(214, 221, 232);
+            visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(45, 52, 64);
+            visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(228, 233, 241);
+            visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(58, 67, 82);
+            visuals.widgets.hovered.fg_stroke.color = egui::Color32::WHITE;
+            visuals.selection.bg_fill = egui::Color32::from_rgb(0, 122, 163);
+            visuals.hyperlink_color = egui::Color32::from_rgb(122, 198, 255);
+        }
+        eframe::Theme::Light => {
+            visuals.override_text_color = Some(egui::Color32::from_rgb(49, 58, 72));
+            visuals.panel_fill = egui::Color32::from_rgb(245, 247, 250);
+            visuals.faint_bg_color = egui::Color32::from_rgb(232, 237, 243);
+            visuals.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
+            visuals.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(184, 194, 208);
+            visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(79, 91, 107);
+        }
+    }
+    visuals
+}
+
+fn watermark_tint(theme: eframe::Theme) -> egui::Color32 {
+    match theme {
+        eframe::Theme::Dark => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 52),
+        eframe::Theme::Light => egui::Color32::from_rgba_unmultiplied(86, 108, 138, 160),
+    }
+}
+
+fn appearance_nav_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    tooltip: &str,
+    mode: AppearanceMode,
+    config: &mut Config,
+    cmd_tx: &mpsc::Sender<MonitorCommand>,
+) {
+    let selected = config.general.appearance_mode == mode;
+    let button = egui::Button::new(egui::RichText::new(icon).size(16.0)).selected(selected);
+    if ui
+        .add_sized([30.0, 26.0], button)
+        .on_hover_text(tooltip)
+        .clicked()
+    {
+        config.general.appearance_mode = mode;
+        let _ = crate::config::save(config);
+        let _ = cmd_tx.send(MonitorCommand::UpdateConfig(config.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_appearance_prefers_os_theme_when_available() {
+        assert_eq!(
+            resolved_theme(AppearanceMode::System, Some(eframe::Theme::Light)),
+            eframe::Theme::Light
+        );
+    }
+
+    #[test]
+    fn system_appearance_falls_back_to_dark_when_os_theme_unknown() {
+        assert_eq!(
+            resolved_theme(AppearanceMode::System, None),
+            eframe::Theme::Dark
+        );
+    }
+
+    #[test]
+    fn light_mode_uses_light_window_theme_command() {
+        assert_eq!(
+            system_theme_command(AppearanceMode::Light),
+            egui::SystemTheme::Light
+        );
+    }
+
+    #[test]
+    fn light_mode_watermark_uses_darker_tint() {
+        let tint = watermark_tint(eframe::Theme::Light);
+        assert!(tint.a() > 120);
+        assert!(tint.r() < 200);
     }
 }
 
