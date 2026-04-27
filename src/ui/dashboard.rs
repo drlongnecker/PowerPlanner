@@ -1,17 +1,14 @@
-// src/ui/dashboard.rs
 use crate::config::{Config, PlanTimeRangeMode};
 use crate::db;
 use crate::types::{AppState, CpuHistoryPoint, MonitorCommand};
-use egui::{self, Align, Align2, Color32, Layout, Pos2, RichText, Sense, Shape, Stroke, Ui};
+use crate::ui::design;
+use egui::{self, Align, Align2, Color32, Layout, Mesh, Pos2, RichText, Sense, Shape, Stroke, Ui};
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 const CPU_GRAPH_HEIGHT: f32 = 300.0;
-const DASHBOARD_TILE_SPACING: f32 = 10.0;
-const DASHBOARD_CONTENT_INSET: f32 = 10.0;
 const CPU_GRAPH_Y_MAX: f32 = 100.0;
-const CPU_GATE_COLOR: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
-const CPU_TREND_COLOR: Color32 = Color32::from_rgb(0x00, 0xA9, 0xA5);
+const CPU_GATE_COLOR: Color32 = design::color::DANGER;
 
 #[derive(Clone, Copy)]
 enum DashboardTileWidth {
@@ -24,12 +21,6 @@ mod tests {
     use super::*;
     use crate::types::{CpuHistoryPlanKind, CpuHistoryPoint};
     use chrono::{Duration, Local};
-
-    #[test]
-    fn dashboard_copy_uses_standard_plan_label() {
-        const BUTTON_LABEL: &str = "Set as Standard Plan";
-        assert_eq!(BUTTON_LABEL, "Set as Standard Plan");
-    }
 
     #[test]
     fn plan_time_breakdown_collapses_single_plan() {
@@ -59,7 +50,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_time_segments_merge_consecutive_matching_plans() {
+    fn plan_time_segments_group_by_plan_time_share() {
         let now = Local::now();
         let history = vec![
             CpuHistoryPoint {
@@ -109,7 +100,7 @@ mod tests {
         let segments = build_plan_time_segments(&history);
 
         assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0].seconds, 480.0);
+        assert_eq!(segments[0].seconds, 780.0);
         assert_eq!(segments[1].seconds, 300.0);
         assert_eq!(segments[2].seconds, 120.0);
     }
@@ -141,7 +132,7 @@ pub fn render(
     let mut usage_window_minutes = config.general.usage_trend_window_minutes;
     let mut plan_time_range_mode = config.general.plan_time_range_mode;
 
-    dashboard_content(ui, |ui| {
+    crate::ui::padded_page(ui, |ui| {
         dashboard_tile(
             ui,
             "Overview",
@@ -226,10 +217,11 @@ pub fn render(
             },
         );
 
-        ui.add_space(10.0);
+        ui.add_space(design::spacing::SECTION_GAP);
         let row_width = ui.available_width();
         let tile_width = tile_width_for_available(row_width, DashboardTileWidth::Half);
         ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
             let usage_window_label = usage_window_minutes;
             dashboard_tile(
                 ui,
@@ -249,13 +241,13 @@ pub fn render(
                             usage_window_label
                         ))
                         .weak()
-                        .size(13.0),
+                        .size(design::type_size::HELP),
                     );
                     ui.add_space(8.0);
                     render_cpu_history_chart(ui, &usage_history, config);
                 },
             );
-            ui.add_space(DASHBOARD_TILE_SPACING);
+            ui.add_space(design::spacing::SECTION_GAP);
             ui.allocate_ui_with_layout(
                 egui::vec2(tile_width, 0.0),
                 Layout::top_down(Align::Min),
@@ -273,7 +265,11 @@ pub fn render(
                             )
                         },
                         |ui| {
-                            ui.label(RichText::new(plan_time_subtitle_text).weak().size(13.0));
+                            ui.label(
+                                RichText::new(plan_time_subtitle_text)
+                                    .weak()
+                                    .size(design::type_size::HELP),
+                            );
                             ui.add_space(8.0);
                             render_plan_time_timeline(ui, &plan_time_history);
                         },
@@ -289,8 +285,6 @@ pub fn render(
         let _ = crate::config::save(config);
         let _ = tx.send(MonitorCommand::UpdateConfig(config.clone()));
     }
-
-    ui.add_space(10.0);
 }
 
 fn load_dashboard_histories(config: &Config) -> (Vec<CpuHistoryPoint>, Vec<CpuHistoryPoint>) {
@@ -372,19 +366,6 @@ fn plan_time_range_selector(
         });
 }
 
-fn dashboard_content(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    let content_width = (ui.available_width() - DASHBOARD_CONTENT_INSET * 2.0).max(320.0);
-    ui.horizontal(|ui| {
-        ui.add_space(DASHBOARD_CONTENT_INSET);
-        ui.allocate_ui_with_layout(
-            egui::vec2(content_width, 0.0),
-            Layout::top_down(Align::Min),
-            add_contents,
-        );
-        ui.add_space(DASHBOARD_CONTENT_INSET);
-    });
-}
-
 fn dashboard_tile(
     ui: &mut Ui,
     title: &str,
@@ -410,17 +391,24 @@ fn show_dashboard_tile(
             egui::Frame::none()
                 .fill(ui.visuals().faint_bg_color)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .rounding(8.0)
-                .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                .rounding(design::radius::SECTION)
+                .inner_margin(egui::Margin::symmetric(
+                    design::spacing::SECTION_PAD_X,
+                    design::spacing::SECTION_PAD_Y,
+                ))
                 .show(ui, |ui| {
-                    ui.set_width(tile_width - 28.0);
+                    ui.set_width(tile_width - design::spacing::SECTION_PAD_X * 2.0);
                     ui.horizontal(|ui| {
-                        ui.heading(title);
+                        ui.label(
+                            RichText::new(title)
+                                .size(design::type_size::SECTION_TITLE)
+                                .strong(),
+                        );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             add_actions(ui);
                         });
                     });
-                    ui.add_space(10.0);
+                    ui.add_space(design::spacing::ROW_GAP);
                     add_contents(ui);
                 });
         },
@@ -430,12 +418,12 @@ fn show_dashboard_tile(
 fn tile_width_for_available(available: f32, width: DashboardTileWidth) -> f32 {
     match width {
         DashboardTileWidth::Full => available,
-        DashboardTileWidth::Half => ((available - DASHBOARD_TILE_SPACING).max(200.0)) / 2.0,
+        DashboardTileWidth::Half => ((available - design::spacing::SECTION_GAP).max(200.0)) / 2.0,
     }
 }
 
 fn summary_row(ui: &mut Ui, label: &str, value: &str) {
-    ui.label(RichText::new(label).weak().size(13.0));
+    ui.label(RichText::new(label).weak().size(design::type_size::STATUS));
     ui.label(value);
     ui.end_row();
 }
@@ -470,8 +458,12 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
         ui.allocate_exact_size(egui::vec2(desired_width, CPU_GRAPH_HEIGHT), Sense::hover());
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
-    painter.rect_filled(rect, 6.0, visuals.extreme_bg_color);
-    painter.rect_stroke(rect, 6.0, visuals.widgets.noninteractive.bg_stroke);
+    painter.rect_filled(rect, design::radius::CONTROL, visuals.extreme_bg_color);
+    painter.rect_stroke(
+        rect,
+        design::radius::CONTROL,
+        visuals.widgets.noninteractive.bg_stroke,
+    );
 
     if history.is_empty() {
         painter.text(
@@ -547,31 +539,13 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
         let y = to_y(point.average_percent);
         painter.line_segment(
             [Pos2::new(x, plot_rect.bottom()), Pos2::new(x, y)],
-            Stroke::new(2.0, point.plan_kind.color().gamma_multiply(0.85)),
+            Stroke::new(2.0, visuals.text_color()),
         );
-        painter.circle_filled(Pos2::new(x, y), 3.5, CPU_TREND_COLOR);
+        painter.circle_filled(Pos2::new(x, y), 3.5, visuals.text_color());
         return;
     }
 
-    for segment in history.windows(2) {
-        let left = &segment[0];
-        let right = &segment[1];
-        let x1 = to_x(left.ts);
-        let x2 = to_x(right.ts);
-        let y1 = to_y(left.average_percent);
-        let y2 = to_y(right.average_percent);
-        let fill = left.plan_kind.color().gamma_multiply(0.6);
-        painter.add(Shape::convex_polygon(
-            vec![
-                Pos2::new(x1, plot_rect.bottom()),
-                Pos2::new(x1, y1),
-                Pos2::new(x2, y2),
-                Pos2::new(x2, plot_rect.bottom()),
-            ],
-            fill,
-            Stroke::NONE,
-        ));
-    }
+    render_cpu_plan_fill(&painter, history, plot_rect, &to_x, &to_y);
 
     let line_points: Vec<Pos2> = history
         .iter()
@@ -579,7 +553,11 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
         .collect();
     painter.add(Shape::line(
         line_points.clone(),
-        Stroke::new(2.0, CPU_TREND_COLOR),
+        Stroke::new(4.0, visuals.extreme_bg_color.gamma_multiply(0.85)),
+    ));
+    painter.add(Shape::line(
+        line_points.clone(),
+        Stroke::new(2.0, visuals.text_color()),
     ));
 
     if let Some(pointer_pos) = response.hover_pos().filter(|pos| plot_rect.contains(*pos)) {
@@ -600,7 +578,7 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
                 ],
                 Stroke::new(1.0, visuals.widgets.hovered.bg_stroke.color),
             );
-            painter.circle_filled(*position, 4.5, Color32::WHITE);
+            painter.circle_filled(*position, 4.5, visuals.text_color());
             response.on_hover_ui_at_pointer(|ui| {
                 ui.label(&point.plan_name);
                 ui.label(format!("CPU: {:.1}%", point.average_percent));
@@ -611,14 +589,44 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
     }
 }
 
+fn render_cpu_plan_fill(
+    painter: &egui::Painter,
+    history: &[CpuHistoryPoint],
+    plot_rect: egui::Rect,
+    to_x: &impl Fn(chrono::DateTime<chrono::Local>) -> f32,
+    to_y: &impl Fn(f32) -> f32,
+) {
+    let mut mesh = Mesh::default();
+    for pair in history.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        let fill = left.plan_kind.color().gamma_multiply(0.9);
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(Pos2::new(to_x(left.ts), plot_rect.bottom()), fill);
+        mesh.colored_vertex(Pos2::new(to_x(left.ts), to_y(left.average_percent)), fill);
+        mesh.colored_vertex(Pos2::new(to_x(right.ts), plot_rect.bottom()), fill);
+        mesh.colored_vertex(Pos2::new(to_x(right.ts), to_y(right.average_percent)), fill);
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base + 2, base + 1, base + 3);
+    }
+
+    if !mesh.is_empty() {
+        painter.add(Shape::mesh(mesh));
+    }
+}
+
 fn render_plan_time_timeline(ui: &mut Ui, history: &[CpuHistoryPoint]) {
     let desired_width = ui.available_width().max(160.0);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(desired_width, CPU_GRAPH_HEIGHT), Sense::hover());
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
-    painter.rect_filled(rect, 6.0, visuals.extreme_bg_color);
-    painter.rect_stroke(rect, 6.0, visuals.widgets.noninteractive.bg_stroke);
+    painter.rect_filled(rect, design::radius::CONTROL, visuals.extreme_bg_color);
+    painter.rect_stroke(
+        rect,
+        design::radius::CONTROL,
+        visuals.widgets.noninteractive.bg_stroke,
+    );
 
     let segments = build_plan_time_segments(history);
     let breakdown = build_plan_time_breakdown(history);

@@ -1,8 +1,9 @@
-// src/app.rs
 use crate::config::{AppearanceMode, Config};
 use crate::types::{AppState, MonitorCommand};
+use crate::ui::design;
 use crate::ui::Nav;
 use eframe::egui;
+use egui::{Align, Layout};
 use std::sync::{mpsc, Arc, RwLock};
 
 const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
@@ -48,7 +49,6 @@ impl eframe::App for PowerPlannerApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.apply_appearance_if_needed(ctx, frame);
 
-        // Spawn the tray-event thread once.
         if !self.waker_started {
             let ctx2 = ctx.clone();
             let cmd_tx2 = self.cmd_tx.clone();
@@ -70,12 +70,10 @@ impl eframe::App for PowerPlannerApp {
             self.waker_started = true;
         }
 
-        // Minimize to tray: hide the window rather than keeping it in the taskbar
         if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        // Lazily decode and upload the logo texture once
         if self.bg_texture.is_none() {
             if let Ok(img) = image::load_from_memory(LOGO_PNG) {
                 let rgba = img.into_rgba8();
@@ -89,7 +87,6 @@ impl eframe::App for PowerPlannerApp {
             }
         }
 
-        // Update tray tooltip only when the plan name changes
         if let Some(ref tray) = self.tray {
             let name = self
                 .state
@@ -100,7 +97,7 @@ impl eframe::App for PowerPlannerApp {
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| "Unknown".into());
             if name != self.last_tooltip_plan {
-                tray.set_tooltip(&format!("PowerPlanner — {}", name));
+                tray.set_tooltip(&format!("PowerPlanner - {}", name));
                 self.last_tooltip_plan = name;
             }
         }
@@ -113,36 +110,11 @@ impl eframe::App for PowerPlannerApp {
             ui.selectable_value(&mut self.nav, Nav::Settings, "Settings");
             ui.selectable_value(&mut self.nav, Nav::History, "Recent Events");
 
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("Appearance").weak().size(12.0));
-            ui.horizontal(|ui| {
-                appearance_nav_button(
-                    ui,
-                    "🖥",
-                    "System theme",
-                    AppearanceMode::System,
-                    &mut self.config,
-                    &self.cmd_tx,
-                );
-                appearance_nav_button(
-                    ui,
-                    "☀",
-                    "Light theme",
-                    AppearanceMode::Light,
-                    &mut self.config,
-                    &self.cmd_tx,
-                );
-                appearance_nav_button(
-                    ui,
-                    "☾",
-                    "Dark theme",
-                    AppearanceMode::Dark,
-                    &mut self.config,
-                    &self.cmd_tx,
-                );
+            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                ui.add_space(8.0);
+                appearance_cycle_button(ui, &mut self.config, &self.cmd_tx);
             });
 
-            // Watermark: paint logo at bottom-left of the nav panel, low opacity
             if let Some(ref tex) = self.bg_texture {
                 let panel_rect = ui.clip_rect();
                 let size = 80.0_f32;
@@ -242,10 +214,10 @@ fn visuals_for_theme(theme: eframe::Theme) -> egui::Visuals {
     match theme {
         eframe::Theme::Dark => {
             visuals.override_text_color = Some(egui::Color32::from_rgb(230, 235, 242));
-            visuals.panel_fill = egui::Color32::from_rgb(20, 24, 30);
-            visuals.faint_bg_color = egui::Color32::from_rgb(34, 40, 50);
-            visuals.extreme_bg_color = egui::Color32::from_rgb(14, 18, 24);
-            visuals.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(76, 86, 101);
+            visuals.panel_fill = design::color::DARK_PANEL;
+            visuals.faint_bg_color = design::color::DARK_SURFACE;
+            visuals.extreme_bg_color = design::color::DARK_INSET;
+            visuals.widgets.noninteractive.bg_stroke.color = design::color::DARK_BORDER;
             visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(214, 221, 232);
             visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(45, 52, 64);
             visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(228, 233, 241);
@@ -256,10 +228,10 @@ fn visuals_for_theme(theme: eframe::Theme) -> egui::Visuals {
         }
         eframe::Theme::Light => {
             visuals.override_text_color = Some(egui::Color32::from_rgb(49, 58, 72));
-            visuals.panel_fill = egui::Color32::from_rgb(245, 247, 250);
-            visuals.faint_bg_color = egui::Color32::from_rgb(232, 237, 243);
-            visuals.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
-            visuals.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(184, 194, 208);
+            visuals.panel_fill = design::color::LIGHT_PANEL;
+            visuals.faint_bg_color = design::color::LIGHT_SURFACE;
+            visuals.extreme_bg_color = design::color::LIGHT_INSET;
+            visuals.widgets.noninteractive.bg_stroke.color = design::color::LIGHT_BORDER;
             visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(79, 91, 107);
         }
     }
@@ -273,24 +245,103 @@ fn watermark_tint(theme: eframe::Theme) -> egui::Color32 {
     }
 }
 
-fn appearance_nav_button(
+fn next_appearance_mode(mode: AppearanceMode) -> AppearanceMode {
+    match mode {
+        AppearanceMode::System => AppearanceMode::Light,
+        AppearanceMode::Light => AppearanceMode::Dark,
+        AppearanceMode::Dark => AppearanceMode::System,
+    }
+}
+
+fn appearance_label(mode: AppearanceMode) -> &'static str {
+    match mode {
+        AppearanceMode::System => "System",
+        AppearanceMode::Light => "Light",
+        AppearanceMode::Dark => "Dark",
+    }
+}
+
+fn appearance_tooltip(mode: AppearanceMode) -> String {
+    format!(
+        "Appearance: {}. Click to switch to {}.",
+        appearance_label(mode),
+        appearance_label(next_appearance_mode(mode))
+    )
+}
+
+fn appearance_cycle_button(
     ui: &mut egui::Ui,
-    icon: &str,
-    tooltip: &str,
-    mode: AppearanceMode,
     config: &mut Config,
     cmd_tx: &mpsc::Sender<MonitorCommand>,
 ) {
-    let selected = config.general.appearance_mode == mode;
-    let button = egui::Button::new(egui::RichText::new(icon).size(16.0)).selected(selected);
-    if ui
-        .add_sized([30.0, 26.0], button)
-        .on_hover_text(tooltip)
-        .clicked()
-    {
-        config.general.appearance_mode = mode;
+    let mode = config.general.appearance_mode;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    let response = response.on_hover_text(appearance_tooltip(mode));
+
+    let visuals = ui.visuals();
+    ui.painter()
+        .rect(rect, 5.0, visuals.panel_fill, egui::Stroke::NONE);
+
+    let icon_rect =
+        egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), egui::vec2(18.0, 18.0));
+    draw_appearance_icon(ui.painter(), icon_rect, mode, visuals.text_color());
+
+    if response.clicked() {
+        config.general.appearance_mode = next_appearance_mode(mode);
         let _ = crate::config::save(config);
         let _ = cmd_tx.send(MonitorCommand::UpdateConfig(config.clone()));
+    }
+}
+
+fn draw_appearance_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    mode: AppearanceMode,
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new(1.5, color);
+    match mode {
+        AppearanceMode::System => {
+            let screen =
+                egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 3.0), egui::vec2(14.0, 10.0));
+            painter.rect_stroke(screen, 2.0, stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(rect.center().x, screen.bottom()),
+                    egui::pos2(rect.center().x, rect.bottom() - 2.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(rect.center().x - 4.0, rect.bottom() - 2.0),
+                    egui::pos2(rect.center().x + 4.0, rect.bottom() - 2.0),
+                ],
+                stroke,
+            );
+        }
+        AppearanceMode::Light => {
+            painter.circle_stroke(rect.center(), 4.3, stroke);
+            for angle in [0.0_f32, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0] {
+                let radians = angle.to_radians();
+                let direction = egui::vec2(radians.cos(), radians.sin());
+                painter.line_segment(
+                    [
+                        rect.center() + direction * 6.6,
+                        rect.center() + direction * 8.3,
+                    ],
+                    stroke,
+                );
+            }
+        }
+        AppearanceMode::Dark => {
+            painter.circle_filled(rect.center(), 7.0, color);
+            painter.circle_filled(
+                rect.center() + egui::vec2(3.0, -2.0),
+                7.0,
+                painter.ctx().style().visuals.panel_fill,
+            );
+        }
     }
 }
 
@@ -323,6 +374,22 @@ mod tests {
     }
 
     #[test]
+    fn appearance_mode_cycles_through_system_light_and_dark() {
+        assert_eq!(
+            next_appearance_mode(AppearanceMode::System),
+            AppearanceMode::Light
+        );
+        assert_eq!(
+            next_appearance_mode(AppearanceMode::Light),
+            AppearanceMode::Dark
+        );
+        assert_eq!(
+            next_appearance_mode(AppearanceMode::Dark),
+            AppearanceMode::System
+        );
+    }
+
+    #[test]
     fn light_mode_watermark_uses_darker_tint() {
         let tint = watermark_tint(eframe::Theme::Light);
         assert!(tint.a() > 120);
@@ -330,8 +397,7 @@ mod tests {
     }
 }
 
-// Polls tray icon and menu events at 100 ms intervals.
-// Runs even when the window is hidden — Win32 ShowWindow bypasses eframe entirely.
+// Runs even when the window is hidden because Win32 ShowWindow bypasses eframe.
 fn tray_event_thread(
     ctx: egui::Context,
     cmd_tx: mpsc::Sender<MonitorCommand>,
@@ -348,7 +414,6 @@ fn tray_event_thread(
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Left-click on tray icon → restore window
         while let Ok(ev) = tray_icon::TrayIconEvent::receiver().try_recv() {
             if let tray_icon::TrayIconEvent::Click {
                 button: tray_icon::MouseButton::Left,
@@ -356,15 +421,14 @@ fn tray_event_thread(
             } = ev
             {
                 win32_show_window();
-                // Sync eframe's internal visibility state — win32_show_window bypasses
-                // eframe, so without this eframe still thinks Visible=false and will
+                // Sync eframe's internal visibility state. win32_show_window bypasses
+                // eframe, so without this eframe still thinks Visible=false and may
                 // deduplicate the next ViewportCommand::Visible(false) as a no-op.
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.request_repaint();
             }
         }
 
-        // Tray context-menu items
         if let Some((ref show_id, ref balanced_id, ref perf_id, ref resume_id, ref exit_id)) = ids {
             while let Ok(ev) = tray_icon::menu::MenuEvent::receiver().try_recv() {
                 if ev.id == *show_id {
@@ -387,8 +451,7 @@ fn tray_event_thread(
     }
 }
 
-/// Restore the PowerPlanner window via Win32 — works even when the window is
-/// hidden and eframe's update() loop is not running.
+/// Restore the PowerPlanner window via Win32 when eframe's update loop is not running.
 #[cfg(windows)]
 fn win32_show_window() {
     use windows::core::PCWSTR;

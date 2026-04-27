@@ -1,19 +1,11 @@
 use crate::config::Config;
 use crate::types::{MonitorCommand, PowerPlan};
+use crate::ui::design;
 use egui::{self, Align, RichText, Ui};
 use std::sync::mpsc;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn settings_copy_uses_plan_grouping_labels() {
-        const SETTINGS_COPY: &str =
-            "Standard Plan|Low Power Plan|High Performance Plan|Automation|Global monitor cadence";
-        assert!(SETTINGS_COPY.contains("Standard Plan"));
-        assert!(SETTINGS_COPY.contains("High Performance Plan"));
-        assert!(SETTINGS_COPY.contains("Global monitor cadence"));
-    }
-}
+const SETTINGS_COMBO_WIDTH: f32 = 230.0;
+const SETTINGS_VALUE_WIDTH: f32 = 132.0;
 
 pub fn render(
     ui: &mut Ui,
@@ -24,34 +16,23 @@ pub fn render(
     let mut changed = false;
 
     crate::ui::padded_page(ui, |ui| {
-        ui.heading("Settings");
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new(
-                "Tune plan switching, plan-specific thresholds, and automation behavior.",
-            )
-            .weak()
-            .size(15.0),
+        design::page_header(
+            ui,
+            "Settings",
+            "Tune startup behavior and the Standard > High Performance > Low Power plan flow.",
         );
-        ui.separator();
-        ui.add_space(10.0);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.columns(2, |columns| {
-                render_standard_plan_card(&mut columns[0], config, available_plans, &mut changed);
-                columns[0].add_space(12.0);
-                render_low_power_plan_card(&mut columns[0], config, available_plans, &mut changed);
-
-                render_high_performance_plan_card(
-                    &mut columns[1],
-                    config,
-                    available_plans,
-                    &mut changed,
-                );
-                columns[1].add_space(12.0);
-                render_automation_card(&mut columns[1], config, &mut changed);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                render_automation_section(ui, config, &mut changed);
+                ui.add_space(design::spacing::SECTION_GAP);
+                render_standard_section(ui, config, available_plans, &mut changed);
+                ui.add_space(design::spacing::SECTION_GAP);
+                render_high_performance_section(ui, config, available_plans, &mut changed);
+                ui.add_space(design::spacing::SECTION_GAP);
+                render_low_power_section(ui, config, available_plans, &mut changed);
             });
-        });
     });
 
     if changed {
@@ -60,150 +41,30 @@ pub fn render(
     }
 }
 
-fn render_standard_plan_card(
-    ui: &mut Ui,
-    config: &mut Config,
-    available_plans: &[PowerPlan],
-    changed: &mut bool,
-) {
-    settings_card(
+fn render_automation_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
+    let elevated = config.autostart.is_elevated;
+    let registered = config.autostart.registered;
+    design::section_with_header_action(
         ui,
-        "Standard Plan",
-        "Normal day-to-day usage, plus the global monitor cadence used while PowerPlanner evaluates transitions.",
+        "Startup Automation",
+        "One-time setup for launching PowerPlanner automatically at login.",
         |ui| {
-            plan_combo_row(
-                ui,
-                "Plan",
-                "The default plan used when no watched app or low-power condition is active.",
-                available_plans,
-                &mut config.general.standard_plan_guid,
-                changed,
-                "standard_plan_combo",
-            );
-            numeric_value_row(
-                ui,
-                "Poll Interval",
-                "Global monitor cadence for process scans and rule evaluation.",
-                &mut config.general.poll_interval_ms,
-                100..=5_000,
-                "ms",
-                changed,
-            );
-            numeric_value_row(
-                ui,
-                "Hold Timer",
-                "Global transition delay after a watched app closes before PowerPlanner relaxes from boosted behavior.",
-                &mut config.general.hold_performance_seconds,
-                0..=300,
-                "s",
-                changed,
-            );
+            let kind = if registered {
+                design::StatusKind::Success
+            } else if elevated {
+                design::StatusKind::Muted
+            } else {
+                design::StatusKind::Warning
+            };
+            design::status_badge(ui, design::registered_status_text(registered), kind);
         },
-    );
-}
-
-fn render_low_power_plan_card(
-    ui: &mut Ui,
-    config: &mut Config,
-    available_plans: &[PowerPlan],
-    changed: &mut bool,
-) {
-    settings_card(
-        ui,
-        "Low Power Plan",
-        "Idle-state behavior and the CPU quiet conditions required before PowerPlanner allows the low-power plan.",
         |ui| {
-            plan_combo_row(
-                ui,
-                "Plan",
-                "Used when the machine is idle and CPU activity stays low.",
-                available_plans,
-                &mut config.general.low_power_plan_guid,
-                changed,
-                "low_power_plan_combo",
-            );
-            let mut cpu_threshold = config.general.low_power_cpu_threshold_percent as u64;
-            numeric_value_row(
-                ui,
-                "CPU Threshold",
-                "Maximum average CPU usage allowed before low power is blocked.",
-                &mut cpu_threshold,
-                1..=100,
-                "%",
-                changed,
-            );
-            config.general.low_power_cpu_threshold_percent = cpu_threshold as u8;
-            numeric_value_row(
-                ui,
-                "Quiet Window",
-                "How long CPU must stay quiet before low power is allowed.",
-                &mut config.general.low_power_cpu_quiet_window_seconds,
-                5..=600,
-                "s",
-                changed,
-            );
-            numeric_value_row(
-                ui,
-                "Idle Wait",
-                "How long the user must be inactive before low power is allowed.",
-                &mut config.general.idle_wait_seconds,
-                60..=14_400,
-                "s",
-                changed,
-            );
-        },
-    );
-}
-
-fn render_high_performance_plan_card(
-    ui: &mut Ui,
-    config: &mut Config,
-    available_plans: &[PowerPlan],
-    changed: &mut bool,
-) {
-    settings_card(
-        ui,
-        "High Performance Plan",
-        "Behavior used while watched apps are active or while performance boosting remains allowed.",
-        |ui| {
-            plan_combo_row(
-                ui,
-                "Plan",
-                "Used when a watched app is running.",
-                available_plans,
-                &mut config.general.performance_plan_guid,
-                changed,
-                "performance_plan_combo",
-            );
-            toggle_row(
-                ui,
-                "Allow HP on Battery",
-                "When enabled, battery power will not suppress the high-performance plan.",
-                &mut config.general.promote_on_battery,
-                changed,
-            );
-        },
-    );
-}
-
-fn render_automation_card(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
-    settings_card(
-        ui,
-        "Automation",
-        "Manage whether PowerPlanner registers itself to start at login.",
-        |ui| {
-            let elevated = config.autostart.is_elevated;
             ui.horizontal(|ui| {
-                let status_text = if config.autostart.registered {
-                    RichText::new("Registered")
-                        .color(egui::Color32::from_rgb(92, 196, 108))
-                        .strong()
-                } else {
-                    RichText::new("Not registered")
-                        .color(ui.visuals().weak_text_color())
-                        .strong()
-                };
-                ui.label(status_text);
+                ui.label(
+                    RichText::new("Task Scheduler registration")
+                        .size(design::type_size::LABEL)
+                        .strong(),
+                );
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     if config.autostart.registered {
                         let remove_label = if elevated { "Remove" } else { "Remove (UAC)" };
@@ -226,7 +87,7 @@ fn render_automation_card(ui: &mut Ui, config: &mut Config, changed: &mut bool) 
                             "Register at login (UAC)"
                         };
                         if ui
-                            .add_sized([140.0, 30.0], egui::Button::new(register_label))
+                            .add_sized([160.0, 30.0], egui::Button::new(register_label))
                             .clicked()
                         {
                             match crate::scheduler::register() {
@@ -241,42 +102,175 @@ fn render_automation_card(ui: &mut Ui, config: &mut Config, changed: &mut bool) 
                 });
             });
 
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             ui.label(
-                RichText::new("Launch PowerPlanner automatically at login via Task Scheduler.")
+                RichText::new("Launches through Windows Task Scheduler.")
                     .weak()
-                    .size(14.0),
+                    .size(design::type_size::HELP),
             );
 
             if !elevated {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Not running as admin - UAC will prompt.")
-                        .color(egui::Color32::from_rgb(210, 170, 60))
-                        .size(14.0),
+                    RichText::new("Not running as admin. Windows will show a UAC prompt.")
+                        .color(design::color::WARNING)
+                        .size(design::type_size::HELP),
                 );
             }
         },
     );
 }
 
-fn settings_card(ui: &mut Ui, title: &str, description: &str, add_contents: impl FnOnce(&mut Ui)) {
-    egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .rounding(10.0)
-        .inner_margin(egui::Margin::symmetric(16.0, 14.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).size(19.0).strong());
-            ui.add_space(3.0);
-            ui.label(RichText::new(description).weak().size(14.0));
-            ui.add_space(12.0);
-            add_contents(ui);
-        });
+fn render_standard_section(
+    ui: &mut Ui,
+    config: &mut Config,
+    available_plans: &[PowerPlan],
+    changed: &mut bool,
+) {
+    design::section(
+        ui,
+        "1. Standard",
+        "Default behavior. These settings apply before specialized plan rules.",
+        |ui| {
+            settings_grid(ui, |ui| {
+                plan_combo_cell(
+                    ui,
+                    "Plan",
+                    "Used when no watched app or low-power condition is active.",
+                    available_plans,
+                    &mut config.general.standard_plan_guid,
+                    changed,
+                    "standard_plan_combo",
+                );
+                numeric_value_cell(
+                    ui,
+                    "Poll Interval",
+                    "Global monitor cadence for scans and rule evaluation.",
+                    &mut config.general.poll_interval_ms,
+                    100..=5_000,
+                    "ms",
+                    changed,
+                );
+                ui.end_row();
+
+                numeric_value_cell(
+                    ui,
+                    "Hold Timer",
+                    "Delay after a watched app closes before relaxing from boosted behavior.",
+                    &mut config.general.hold_performance_seconds,
+                    0..=300,
+                    "s",
+                    changed,
+                );
+                empty_cell(ui);
+                ui.end_row();
+            });
+        },
+    );
 }
 
-fn plan_combo_row(
+fn render_high_performance_section(
+    ui: &mut Ui,
+    config: &mut Config,
+    available_plans: &[PowerPlan],
+    changed: &mut bool,
+) {
+    design::section(
+        ui,
+        "2. High Performance",
+        "Behavior used while watched apps are active or while performance boosting remains allowed.",
+        |ui| {
+            settings_grid(ui, |ui| {
+                plan_combo_cell(
+                    ui,
+                    "Plan",
+                    "Used when a watched app is running.",
+                    available_plans,
+                    &mut config.general.performance_plan_guid,
+                    changed,
+                    "performance_plan_combo",
+                );
+                toggle_cell(
+                    ui,
+                    "Allow HP on Battery",
+                    "Battery power will not suppress the high-performance plan.",
+                    &mut config.general.promote_on_battery,
+                    changed,
+                );
+                ui.end_row();
+            });
+        },
+    );
+}
+
+fn render_low_power_section(
+    ui: &mut Ui,
+    config: &mut Config,
+    available_plans: &[PowerPlan],
+    changed: &mut bool,
+) {
+    design::section(
+        ui,
+        "3. Low Power",
+        "Idle-state behavior and CPU quiet conditions required before low power is allowed.",
+        |ui| {
+            settings_grid(ui, |ui| {
+                plan_combo_cell(
+                    ui,
+                    "Plan",
+                    "Used when the machine is idle and CPU activity stays low.",
+                    available_plans,
+                    &mut config.general.low_power_plan_guid,
+                    changed,
+                    "low_power_plan_combo",
+                );
+                let mut cpu_threshold = config.general.low_power_cpu_threshold_percent as u64;
+                numeric_value_cell(
+                    ui,
+                    "CPU Threshold",
+                    "Maximum average CPU usage allowed before low power is blocked.",
+                    &mut cpu_threshold,
+                    1..=100,
+                    "%",
+                    changed,
+                );
+                config.general.low_power_cpu_threshold_percent = cpu_threshold as u8;
+                ui.end_row();
+
+                numeric_value_cell(
+                    ui,
+                    "Quiet Window",
+                    "How long CPU must stay quiet before low power is allowed.",
+                    &mut config.general.low_power_cpu_quiet_window_seconds,
+                    5..=600,
+                    "s",
+                    changed,
+                );
+                numeric_value_cell(
+                    ui,
+                    "Idle Wait",
+                    "How long the user must be inactive before low power is allowed.",
+                    &mut config.general.idle_wait_seconds,
+                    60..=14_400,
+                    "s",
+                    changed,
+                );
+                ui.end_row();
+            });
+        },
+    );
+}
+
+fn settings_grid(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    let column_width = ((ui.available_width() - 18.0) / 2.0).max(120.0);
+    egui::Grid::new(ui.next_auto_id())
+        .num_columns(2)
+        .spacing([18.0, design::spacing::ROW_GAP])
+        .min_col_width(column_width)
+        .show(ui, add_contents);
+}
+
+fn plan_combo_cell(
     ui: &mut Ui,
     label: &str,
     description: &str,
@@ -291,46 +285,31 @@ fn plan_combo_row(
         .map(|p| p.name.as_str())
         .unwrap_or("Select a plan");
 
-    setting_combo_row(ui, label, description, combo_id, current, |ui| {
-        for plan in available_plans {
-            if ui
-                .selectable_label(*selected_guid == plan.guid, &plan.name)
-                .clicked()
-            {
-                *selected_guid = plan.guid.clone();
-                *changed = true;
-            }
-        }
-    });
-}
-
-fn setting_combo_row(
-    ui: &mut Ui,
-    label: &str,
-    description: &str,
-    combo_id: &str,
-    selected_text: &str,
-    add_items: impl FnOnce(&mut Ui),
-) {
     ui.vertical(|ui| {
-        ui.label(RichText::new(label).size(17.0).strong());
-        ui.label(RichText::new(description).weak().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add_space((ui.available_width() - 230.0).max(0.0));
-            ui.scope(|ui| {
-                ui.spacing_mut().interact_size.y = 34.0;
-                egui::ComboBox::from_id_source(combo_id)
-                    .selected_text(selected_text)
-                    .width(230.0)
-                    .show_ui(ui, add_items);
-            });
+        design::setting_label(ui, label, description);
+        ui.add_space(6.0);
+        ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = 32.0;
+            let control_width = ui.available_width().min(SETTINGS_COMBO_WIDTH);
+            egui::ComboBox::from_id_source(combo_id)
+                .selected_text(current)
+                .width(control_width)
+                .show_ui(ui, |ui| {
+                    for plan in available_plans {
+                        if ui
+                            .selectable_label(*selected_guid == plan.guid, &plan.name)
+                            .clicked()
+                        {
+                            *selected_guid = plan.guid.clone();
+                            *changed = true;
+                        }
+                    }
+                });
         });
-        ui.add_space(8.0);
     });
 }
 
-fn numeric_value_row(
+fn numeric_value_cell(
     ui: &mut Ui,
     label: &str,
     description: &str,
@@ -340,36 +319,30 @@ fn numeric_value_row(
     changed: &mut bool,
 ) {
     ui.vertical(|ui| {
-        ui.label(RichText::new(label).size(15.0).strong());
-        ui.label(RichText::new(description).weak().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add_space((ui.available_width() - 140.0).max(0.0));
-            let mut numeric = egui::DragValue::new(value)
-                .range(range)
-                .suffix(format!(" {}", suffix));
-            numeric = numeric.speed(1.0);
-            if ui.add_sized([140.0, 30.0], numeric).changed() {
-                *changed = true;
-            }
-        });
-        ui.add_space(8.0);
+        design::setting_label(ui, label, description);
+        ui.add_space(6.0);
+        let numeric = egui::DragValue::new(value)
+            .range(range)
+            .suffix(format!(" {}", suffix))
+            .speed(1.0);
+        let control_width = ui.available_width().min(SETTINGS_VALUE_WIDTH);
+        if ui.add_sized([control_width, 30.0], numeric).changed() {
+            *changed = true;
+        }
     });
 }
 
-fn toggle_row(ui: &mut Ui, label: &str, description: &str, value: &mut bool, changed: &mut bool) {
+fn toggle_cell(ui: &mut Ui, label: &str, description: &str, value: &mut bool, changed: &mut bool) {
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new(label).size(15.0).strong());
-                ui.label(RichText::new(description).weak().size(12.0));
-            });
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                if ui.checkbox(value, "").changed() {
-                    *changed = true;
-                }
-            });
-        });
-        ui.add_space(8.0);
+        design::setting_label(ui, label, description);
+        ui.add_space(6.0);
+        if design::enabled_badge_button(ui, *value).clicked() {
+            *value = !*value;
+            *changed = true;
+        }
     });
+}
+
+fn empty_cell(ui: &mut Ui) {
+    ui.allocate_space(egui::vec2(1.0, 1.0));
 }
