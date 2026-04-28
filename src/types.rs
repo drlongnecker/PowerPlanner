@@ -16,6 +16,106 @@ pub struct PowerPlan {
     pub name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CpuInfo {
+    pub manufacturer: String,
+    pub brand: String,
+    pub base_mhz: Option<u32>,
+    pub cores: Option<u32>,
+    pub logical_processors: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CpuFrequencySample {
+    pub max_mhz: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcessorLimit {
+    pub ac: Option<u32>,
+    pub dc: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlanProcessorSettings {
+    pub min_percent: ProcessorLimit,
+    pub max_percent: ProcessorLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanProcessorRecommendation {
+    pub min_percent: u32,
+    pub max_percent: u32,
+}
+
+impl PlanProcessorRecommendation {
+    pub fn new(min_percent: u32, max_percent: u32) -> Self {
+        Self {
+            min_percent,
+            max_percent,
+        }
+    }
+
+    pub fn standard_default() -> Self {
+        Self {
+            min_percent: 5,
+            max_percent: 99,
+        }
+    }
+
+    pub fn low_power_default() -> Self {
+        Self {
+            min_percent: 0,
+            max_percent: 20,
+        }
+    }
+
+    pub fn performance_default() -> Self {
+        Self {
+            min_percent: 100,
+            max_percent: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanDiagnostics {
+    Configured,
+    NeedsReview,
+    Unavailable,
+}
+
+impl PlanDiagnostics {
+    pub fn for_settings(
+        settings: Option<&PlanProcessorSettings>,
+        recommendation: PlanProcessorRecommendation,
+    ) -> Self {
+        let Some(settings) = settings else {
+            return Self::Unavailable;
+        };
+
+        let values = [
+            settings.min_percent.ac,
+            settings.min_percent.dc,
+            settings.max_percent.ac,
+            settings.max_percent.dc,
+        ];
+        if values.iter().any(|value| value.is_none()) {
+            return Self::Unavailable;
+        }
+
+        if settings.min_percent.ac == Some(recommendation.min_percent)
+            && settings.min_percent.dc == Some(recommendation.min_percent)
+            && settings.max_percent.ac == Some(recommendation.max_percent)
+            && settings.max_percent.dc == Some(recommendation.max_percent)
+        {
+            Self::Configured
+        } else {
+            Self::NeedsReview
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BatteryStatus {
     pub on_battery: bool,
@@ -81,6 +181,10 @@ pub enum MonitorCommand {
     ForcePlan(Option<String>), // Some(guid) = force and lock; None = clear force, resume auto
     UpdateWatchlist(Vec<String>), // replace watchlist; monitor picks up next tick
     UpdateConfig(crate::config::Config), // replaces full config; monitor picks up next tick
+    ApplyPlanProcessorRecommendation {
+        guid: String,
+        recommendation: PlanProcessorRecommendation,
+    },
     RefreshPlans,
     Stop,
 }
@@ -94,6 +198,10 @@ pub struct AppState {
     pub hold_remaining_secs: Option<f32>,
     pub idle_for_secs: Option<f32>,
     pub cpu_average_percent: Option<f32>,
+    pub cpu_info: Option<CpuInfo>,
+    pub cpu_frequency: CpuFrequencySample,
+    pub turbo_rescue_state: String,
+    pub plan_processor_settings: std::collections::BTreeMap<String, Option<PlanProcessorSettings>>,
     pub cpu_history: VecDeque<CpuHistoryPoint>,
     pub low_power_ready_input: bool,
     pub low_power_ready_cpu: bool,
@@ -110,5 +218,75 @@ impl AppState {
         if self.recent_events.len() > 50 {
             self.recent_events.pop_back();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(min: u32, max: u32) -> PlanProcessorSettings {
+        PlanProcessorSettings {
+            min_percent: ProcessorLimit {
+                ac: Some(min),
+                dc: Some(min),
+            },
+            max_percent: ProcessorLimit {
+                ac: Some(max),
+                dc: Some(max),
+            },
+        }
+    }
+
+    #[test]
+    fn plan_diagnostics_marks_matching_values_configured() {
+        assert_eq!(
+            PlanDiagnostics::for_settings(
+                Some(&settings(5, 99)),
+                PlanProcessorRecommendation::standard_default()
+            ),
+            PlanDiagnostics::Configured
+        );
+    }
+
+    #[test]
+    fn plan_diagnostics_marks_mismatched_values_for_review() {
+        assert_eq!(
+            PlanDiagnostics::for_settings(
+                Some(&settings(100, 100)),
+                PlanProcessorRecommendation::standard_default()
+            ),
+            PlanDiagnostics::NeedsReview
+        );
+    }
+
+    #[test]
+    fn plan_diagnostics_marks_missing_values_unavailable() {
+        let settings = PlanProcessorSettings {
+            min_percent: ProcessorLimit {
+                ac: Some(5),
+                dc: None,
+            },
+            max_percent: ProcessorLimit {
+                ac: Some(99),
+                dc: Some(99),
+            },
+        };
+
+        assert_eq!(
+            PlanDiagnostics::for_settings(
+                Some(&settings),
+                PlanProcessorRecommendation::standard_default(),
+            ),
+            PlanDiagnostics::Unavailable
+        );
+    }
+
+    #[test]
+    fn plan_diagnostics_marks_unreadable_settings_unavailable() {
+        assert_eq!(
+            PlanDiagnostics::for_settings(None, PlanProcessorRecommendation::standard_default()),
+            PlanDiagnostics::Unavailable
+        );
     }
 }

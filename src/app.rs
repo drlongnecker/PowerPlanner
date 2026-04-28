@@ -154,12 +154,7 @@ impl eframe::App for PowerPlannerApp {
                     crate::ui::watched::render(ui, &*state, &self.cmd_tx, &mut self.config);
                 }
                 Nav::Settings => {
-                    crate::ui::settings::render(
-                        ui,
-                        &mut self.config,
-                        &self.cmd_tx,
-                        &state.available_plans,
-                    );
+                    crate::ui::settings::render(ui, &mut self.config, &self.cmd_tx, &*state);
                 }
                 Nav::History => {
                     crate::ui::history::render(ui, &*state);

@@ -4,10 +4,10 @@ use crate::db;
 use crate::idle::{IdleReader, WindowsIdleReader};
 use crate::power::PowerApi;
 use crate::types::{
-    AppState, CpuHistoryPlanKind, CpuHistoryPoint, MonitorCommand, PowerEvent, PowerPlan,
-    RunningProcess,
+    AppState, CpuFrequencySample, CpuHistoryPlanKind, CpuHistoryPoint, MonitorCommand, PowerEvent,
+    PowerPlan, RunningProcess,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{mpsc, Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use sysinfo::System as SysInfo;
@@ -27,6 +27,12 @@ struct DashboardCpuSample {
     point: CpuHistoryPoint,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanDecision {
+    guid: String,
+    trigger: String,
+}
+
 pub struct MonitorState {
     pub config: Config,
     pub last_match_at: Option<Instant>,
@@ -41,6 +47,7 @@ pub struct MonitorState {
     cpu_samples: VecDeque<CpuSample>,
     dashboard_cpu_history: VecDeque<DashboardCpuSample>,
     last_dashboard_sample_at: Option<Instant>,
+    turbo_rescue_since: Option<Instant>,
     sys: SysInfo,
 }
 
@@ -66,6 +73,7 @@ impl MonitorState {
             cpu_samples: VecDeque::new(),
             dashboard_cpu_history: VecDeque::new(),
             last_dashboard_sample_at: None,
+            turbo_rescue_since: None,
             sys: SysInfo::new(),
         }
     }
@@ -88,8 +96,7 @@ impl MonitorState {
             at: now,
             usage_percent,
         });
-        let quiet_window =
-            Duration::from_secs(self.config.general.low_power_cpu_quiet_window_seconds);
+        let quiet_window = Duration::from_secs(self.config.general.cpu_average_window_seconds);
         while let Some(front) = self.cpu_samples.front() {
             if now.duration_since(front.at) > quiet_window {
                 self.cpu_samples.pop_front();
@@ -111,7 +118,7 @@ impl MonitorState {
     fn cpu_is_quiet(&self, now: Instant) -> bool {
         let _ = now;
         self.cpu_average_percent()
-            .map(|average| average <= self.config.general.low_power_cpu_threshold_percent as f32)
+            .map(|average| average <= self.config.general.cpu_average_threshold_percent as f32)
             .unwrap_or(false)
     }
 
@@ -236,24 +243,92 @@ impl MonitorState {
         idle_for >= Duration::from_secs(self.config.general.idle_wait_seconds)
     }
 
-    pub fn decide_plan(
+    fn turbo_rescue_is_ready(
+        &mut self,
+        now: Instant,
+        frequency: CpuFrequencySample,
+        cpu_average_percent: Option<f32>,
+        cpu_base_mhz: Option<u32>,
+    ) -> bool {
+        let active = self.config.general.turbo_rescue_enabled
+            && frequency
+                .max_mhz
+                .zip(cpu_base_mhz)
+                .is_some_and(|(current, base)| current > base.saturating_add(100))
+            && cpu_average_percent.is_some_and(|average| {
+                average >= self.config.general.turbo_rescue_cpu_threshold_percent as f32
+            });
+
+        if !active {
+            self.turbo_rescue_since = None;
+            return false;
+        }
+
+        let since = *self.turbo_rescue_since.get_or_insert(now);
+        now.duration_since(since)
+            >= Duration::from_secs(self.config.general.turbo_rescue_window_seconds)
+    }
+
+    fn turbo_rescue_status_text(
+        &self,
+        turbo_rescue_ready: bool,
+        cpu_base_mhz: Option<u32>,
+        frequency: CpuFrequencySample,
+    ) -> String {
+        if cpu_base_mhz.is_none() || frequency.max_mhz.is_none() {
+            return "unavailable".to_string();
+        }
+        if turbo_rescue_ready {
+            return "holding".to_string();
+        }
+        if let Some(since) = self.turbo_rescue_since {
+            return format!(
+                "watching ({:.0}s / {}s)",
+                since.elapsed().as_secs_f32(),
+                self.config.general.turbo_rescue_window_seconds
+            );
+        }
+        "inactive".to_string()
+    }
+
+    fn decide_plan(
         &mut self,
         has_match: bool,
         on_battery: bool,
         now: Instant,
         idle_for: Duration,
-    ) -> String {
+        turbo_rescue_ready: bool,
+    ) -> PlanDecision {
         // A forced plan overrides all automatic logic.
         if let Some(ref guid) = self.forced_plan_guid {
             self.low_power_busy_since = None;
-            return guid.clone();
+            return PlanDecision {
+                guid: guid.clone(),
+                trigger: "manual".to_string(),
+            };
         }
 
         let suppress = on_battery && !self.config.general.promote_on_battery;
 
         if !suppress && has_match {
             self.low_power_busy_since = None;
-            return self.config.general.performance_plan_guid.clone();
+            return PlanDecision {
+                guid: self.config.general.performance_plan_guid.clone(),
+                trigger: self
+                    .last_match_trigger
+                    .clone()
+                    .unwrap_or_else(|| "watched app".to_string()),
+            };
+        }
+
+        if !suppress && turbo_rescue_ready {
+            self.low_power_busy_since = None;
+            self.last_match_at = Some(now);
+            self.last_match_trigger = Some("cpu turbo rescue".to_string());
+            return PlanDecision {
+                guid: self.config.general.performance_plan_guid.clone(),
+                trigger: "cpu turbo rescue".to_string(),
+            };
         }
 
         if !suppress {
@@ -261,7 +336,14 @@ impl MonitorState {
                 let hold = Duration::from_secs(self.config.general.hold_performance_seconds);
                 if now.duration_since(last) < hold {
                     self.low_power_busy_since = None;
-                    return self.config.general.performance_plan_guid.clone();
+                    return PlanDecision {
+                        guid: self.config.general.performance_plan_guid.clone(),
+                        trigger: self
+                            .last_match_trigger
+                            .as_ref()
+                            .map(|trigger| format!("{} (holding)", trigger))
+                            .unwrap_or_else(|| "hold timer".to_string()),
+                    };
                 }
             }
         }
@@ -271,7 +353,10 @@ impl MonitorState {
 
         if idle_ready && cpu_quiet {
             self.low_power_busy_since = None;
-            return self.config.general.low_power_plan_guid.clone();
+            return PlanDecision {
+                guid: self.config.general.low_power_plan_guid.clone(),
+                trigger: "entered low power".to_string(),
+            };
         }
 
         let is_currently_low_power =
@@ -280,16 +365,33 @@ impl MonitorState {
             let hold = Duration::from_secs(self.config.general.hold_performance_seconds);
             if let Some(busy_since) = self.low_power_busy_since {
                 if now.duration_since(busy_since) < hold {
-                    return self.config.general.low_power_plan_guid.clone();
+                    return PlanDecision {
+                        guid: self.config.general.low_power_plan_guid.clone(),
+                        trigger: "idle + quiet cpu".to_string(),
+                    };
                 }
             } else {
                 self.low_power_busy_since = Some(now);
-                return self.config.general.low_power_plan_guid.clone();
+                return PlanDecision {
+                    guid: self.config.general.low_power_plan_guid.clone(),
+                    trigger: "idle + quiet cpu".to_string(),
+                };
             }
         }
 
         self.low_power_busy_since = None;
-        self.config.general.standard_plan_guid.clone()
+        PlanDecision {
+            guid: self.config.general.standard_plan_guid.clone(),
+            trigger: if idle_for < Duration::from_secs(self.config.general.idle_wait_seconds) {
+                "input resumed".to_string()
+            } else if !self.cpu_is_quiet(now) {
+                "cpu above threshold".to_string()
+            } else if self.last_match_at.is_some() {
+                "hold expired".to_string()
+            } else {
+                "standard".to_string()
+            },
+        }
     }
 }
 
@@ -309,6 +411,9 @@ pub fn run(
 
     let available_plans = app_state.read().unwrap().available_plans.clone();
     let mut state = MonitorState::new(config, initial_guid, available_plans);
+    let mut cpu_info = power.get_cpu_info().ok();
+    let mut plan_processor_settings =
+        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
     let mut last_sanity = Instant::now();
 
     loop {
@@ -352,12 +457,30 @@ pub fn run(
                 MonitorCommand::UpdateConfig(cfg) => {
                     state.config = cfg;
                     state.rebuild_watchlist_lower();
+                    plan_processor_settings =
+                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
+                }
+                MonitorCommand::ApplyPlanProcessorRecommendation {
+                    guid,
+                    recommendation,
+                } => {
+                    if let Err(err) =
+                        power.apply_plan_processor_recommendation(&guid, recommendation)
+                    {
+                        app_state.write().unwrap().last_error =
+                            Some(format!("Failed to update processor limits: {}", err));
+                    }
+                    plan_processor_settings =
+                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
                 }
                 MonitorCommand::RefreshPlans => {
                     if let Ok(plans) = power.enumerate_plans() {
                         state.available_plans = plans.clone();
                         app_state.write().unwrap().available_plans = plans;
                     }
+                    cpu_info = power.get_cpu_info().ok();
+                    plan_processor_settings =
+                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
                 }
             }
         }
@@ -368,6 +491,14 @@ pub fn run(
         state.sys.refresh_cpu();
         let cpu_usage = state.sys.global_cpu_info().cpu_usage();
         state.record_cpu_observation(now, cpu_usage);
+        let cpu_frequency = power.get_cpu_frequency_sample().unwrap_or_default();
+        let cpu_average_percent = state.cpu_average_percent();
+        let turbo_rescue_ready = state.turbo_rescue_is_ready(
+            now,
+            cpu_frequency,
+            cpu_average_percent,
+            cpu_info.as_ref().and_then(|info| info.base_mhz),
+        );
 
         // Enumerate processes
         let running = get_running_processes(&mut state.sys);
@@ -386,23 +517,18 @@ pub fn run(
 
         let battery = power.get_battery_status().unwrap_or_default();
         let idle_for = idle_reader.idle_duration().unwrap_or(Duration::ZERO);
-        let target_guid = state.decide_plan(has_match, battery.on_battery, now, idle_for);
+        let decision = state.decide_plan(
+            has_match,
+            battery.on_battery,
+            now,
+            idle_for,
+            turbo_rescue_ready,
+        );
+        let target_guid = decision.guid.clone();
 
         // Switch if the target differs from current
         if target_guid != state.current_plan_guid {
-            let trigger = if has_match {
-                matched.join(", ")
-            } else if target_guid == state.config.general.low_power_plan_guid {
-                "entered low power".to_string()
-            } else if idle_for < Duration::from_secs(state.config.general.idle_wait_seconds) {
-                "input resumed".to_string()
-            } else if !state.cpu_is_quiet(now) {
-                "cpu above threshold".to_string()
-            } else if state.last_match_at.is_some() {
-                "hold expired".to_string()
-            } else {
-                "standard".to_string()
-            };
+            let trigger = decision.trigger.clone();
 
             if power.set_active_plan(&target_guid).is_ok() {
                 let plan_name = state
@@ -448,7 +574,6 @@ pub fn run(
 
         // Update shared AppState for UI
         {
-            let cpu_average_percent = state.cpu_average_percent();
             let low_power_ready_input = state.input_is_idle_enough(idle_for);
             let low_power_ready_cpu = state.cpu_is_quiet(now);
             let hold_remaining = state
@@ -484,6 +609,14 @@ pub fn run(
             s.hold_remaining_secs = hold_remaining;
             s.idle_for_secs = Some(idle_for.as_secs_f32());
             s.cpu_average_percent = cpu_average_percent;
+            s.cpu_info = cpu_info.clone();
+            s.cpu_frequency = cpu_frequency;
+            s.turbo_rescue_state = state.turbo_rescue_status_text(
+                turbo_rescue_ready,
+                cpu_info.as_ref().and_then(|info| info.base_mhz),
+                cpu_frequency,
+            );
+            s.plan_processor_settings = plan_processor_settings.clone();
             s.cpu_history = state
                 .dashboard_cpu_history
                 .iter()
@@ -534,6 +667,24 @@ fn get_running_processes(sys: &mut SysInfo) -> Vec<RunningProcess> {
     result
 }
 
+fn refresh_plan_processor_settings(
+    power: &dyn PowerApi,
+    config: &Config,
+) -> Result<BTreeMap<String, Option<crate::types::PlanProcessorSettings>>, ()> {
+    let mut result = BTreeMap::new();
+    for guid in [
+        &config.general.standard_plan_guid,
+        &config.general.performance_plan_guid,
+        &config.general.low_power_plan_guid,
+    ] {
+        if guid.is_empty() || result.contains_key(guid) {
+            continue;
+        }
+        result.insert(guid.clone(), power.read_plan_processor_settings(guid).ok());
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,17 +699,32 @@ mod tests {
         c.general.performance_plan_guid = "perf-guid".into();
         c.general.hold_performance_seconds = 10;
         c.general.idle_wait_seconds = 600;
-        c.general.low_power_cpu_threshold_percent = 10;
-        c.general.low_power_cpu_quiet_window_seconds = 60;
+        c.general.cpu_average_threshold_percent = 10;
+        c.general.cpu_average_window_seconds = 60;
+        c.general.turbo_rescue_enabled = true;
+        c.general.turbo_rescue_cpu_threshold_percent = 10;
+        c.general.turbo_rescue_window_seconds = 15;
         c.general.promote_on_battery = false;
         c
+    }
+
+    fn decide_guid(
+        state: &mut MonitorState,
+        has_match: bool,
+        on_battery: bool,
+        now: Instant,
+        idle_for: Duration,
+    ) -> String {
+        state
+            .decide_plan(has_match, on_battery, now, idle_for, false)
+            .guid
     }
 
     #[test]
     fn test_match_triggers_performance() {
         let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
         assert_eq!(
-            s.decide_plan(true, false, Instant::now(), Duration::ZERO),
+            decide_guid(&mut s, true, false, Instant::now(), Duration::ZERO),
             "perf-guid"
         );
     }
@@ -567,7 +733,7 @@ mod tests {
     fn test_no_match_no_history_returns_idle() {
         let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
         assert_eq!(
-            s.decide_plan(false, false, Instant::now(), Duration::ZERO),
+            decide_guid(&mut s, false, false, Instant::now(), Duration::ZERO),
             "standard-guid"
         );
     }
@@ -579,7 +745,13 @@ mod tests {
         s.last_match_at = Some(base);
         // 5 seconds later — within 10s hold
         assert_eq!(
-            s.decide_plan(false, false, base + Duration::from_secs(5), Duration::ZERO),
+            decide_guid(
+                &mut s,
+                false,
+                false,
+                base + Duration::from_secs(5),
+                Duration::ZERO
+            ),
             "perf-guid"
         );
     }
@@ -591,7 +763,13 @@ mod tests {
         s.last_match_at = Some(base);
         // 15 seconds later — past 10s hold
         assert_eq!(
-            s.decide_plan(false, false, base + Duration::from_secs(15), Duration::ZERO),
+            decide_guid(
+                &mut s,
+                false,
+                false,
+                base + Duration::from_secs(15),
+                Duration::ZERO
+            ),
             "standard-guid"
         );
     }
@@ -601,7 +779,7 @@ mod tests {
         let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
         // on_battery = true, promote_on_battery = false → stay idle even with match
         assert_eq!(
-            s.decide_plan(true, true, Instant::now(), Duration::ZERO),
+            decide_guid(&mut s, true, true, Instant::now(), Duration::ZERO),
             "standard-guid"
         );
     }
@@ -612,7 +790,7 @@ mod tests {
         cfg.general.promote_on_battery = true;
         let mut s = MonitorState::new(cfg, "standard-guid".into(), vec![]);
         assert_eq!(
-            s.decide_plan(true, true, Instant::now(), Duration::ZERO),
+            decide_guid(&mut s, true, true, Instant::now(), Duration::ZERO),
             "perf-guid"
         );
     }
@@ -625,7 +803,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(30), 6.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(61),
@@ -643,7 +822,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(30), 20.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(61),
@@ -662,7 +842,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(61), 22.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(61),
@@ -682,7 +863,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(72), 24.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(61),
@@ -692,7 +874,8 @@ mod tests {
         );
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(72),
@@ -710,7 +893,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(30), 5.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(61),
@@ -729,7 +913,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(61), 22.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 false,
                 false,
                 base + Duration::from_secs(61),
@@ -747,7 +932,8 @@ mod tests {
         s.record_cpu_sample(base + Duration::from_secs(30), 3.0);
 
         assert_eq!(
-            s.decide_plan(
+            decide_guid(
+                &mut s,
                 true,
                 false,
                 base + Duration::from_secs(61),
@@ -755,6 +941,98 @@ mod tests {
             ),
             "perf-guid"
         );
+    }
+
+    #[test]
+    fn test_turbo_rescue_requires_frequency_above_base() {
+        let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
+        let base = Instant::now();
+
+        assert!(!s.turbo_rescue_is_ready(
+            base + Duration::from_secs(16),
+            CpuFrequencySample {
+                max_mhz: Some(3560),
+            },
+            Some(25.0),
+            Some(3500),
+        ));
+    }
+
+    #[test]
+    fn test_turbo_rescue_requires_cpu_average_above_threshold() {
+        let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
+        let base = Instant::now();
+
+        assert!(!s.turbo_rescue_is_ready(
+            base + Duration::from_secs(16),
+            CpuFrequencySample {
+                max_mhz: Some(3800),
+            },
+            Some(5.0),
+            Some(3500),
+        ));
+    }
+
+    #[test]
+    fn test_sustained_turbo_rescue_promotes_to_performance() {
+        let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
+        let base = Instant::now();
+        let frequency = CpuFrequencySample {
+            max_mhz: Some(3800),
+        };
+
+        assert!(!s.turbo_rescue_is_ready(base, frequency, Some(25.0), Some(3500)));
+        let ready = s.turbo_rescue_is_ready(
+            base + Duration::from_secs(16),
+            frequency,
+            Some(25.0),
+            Some(3500),
+        );
+        let decision = s.decide_plan(
+            false,
+            false,
+            base + Duration::from_secs(16),
+            Duration::from_secs(120),
+            ready,
+        );
+
+        assert!(ready);
+        assert_eq!(decision.guid, "perf-guid");
+        assert_eq!(decision.trigger, "cpu turbo rescue");
+    }
+
+    #[test]
+    fn test_battery_suppresses_turbo_rescue() {
+        let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
+        let base = Instant::now();
+
+        let decision = s.decide_plan(
+            false,
+            true,
+            base + Duration::from_secs(61),
+            Duration::from_secs(120),
+            true,
+        );
+
+        assert_eq!(decision.guid, "standard-guid");
+    }
+
+    #[test]
+    fn test_manual_force_overrides_turbo_rescue() {
+        let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
+        s.forced_plan_guid = Some("low-guid".into());
+        let base = Instant::now();
+
+        let decision = s.decide_plan(
+            false,
+            false,
+            base + Duration::from_secs(61),
+            Duration::from_secs(120),
+            true,
+        );
+
+        assert_eq!(decision.guid, "low-guid");
+        assert_eq!(decision.trigger, "manual");
     }
 
     #[test]

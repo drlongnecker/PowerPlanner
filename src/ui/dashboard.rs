@@ -9,6 +9,7 @@ use std::sync::mpsc;
 const CPU_GRAPH_HEIGHT: f32 = 300.0;
 const CPU_GRAPH_Y_MAX: f32 = 100.0;
 const CPU_GATE_COLOR: Color32 = design::color::DANGER;
+const TOP_TILE_HEIGHT: f32 = 280.0;
 
 #[derive(Clone, Copy)]
 enum DashboardTileWidth {
@@ -133,89 +134,32 @@ pub fn render(
     let mut plan_time_range_mode = config.general.plan_time_range_mode;
 
     crate::ui::padded_page(ui, |ui| {
-        dashboard_tile(
-            ui,
-            "Overview",
-            DashboardTileWidth::Full,
-            |_| {},
-            |ui| {
-                if let Some(ref forced) = state.forced_plan {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(egui::Color32::YELLOW, format!("Forced: {}", forced.name));
-                        if ui.button("Resume Auto").clicked() {
-                            let _ = tx.send(MonitorCommand::ForcePlan(None));
-                        }
-                    });
-                    ui.add_space(6.0);
-                }
-
-                if let Some(ref err) = state.last_error {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-                    ui.add_space(6.0);
-                }
-
-                egui::Grid::new("dashboard_overview_grid")
-                    .num_columns(2)
-                    .spacing([18.0, 10.0])
-                    .min_col_width(140.0)
-                    .show(ui, |ui| {
-                        summary_row(ui, "Current Plan", plan_name);
-                        summary_row(ui, "Power Source", power_source_text(state).as_str());
-                        summary_row(ui, "Monitor", monitor_status_text(state));
-
-                        if !state.matched_processes.is_empty() {
-                            summary_row(ui, "Active Triggers", &state.matched_processes.join(", "));
-                        }
-
-                        if let Some(r) = state.hold_remaining_secs.filter(|r| *r > 0.0) {
-                            summary_row(ui, "Hold Timer", &format!("{:.0}s remaining", r));
-                        }
-
-                        if let Some(idle_for_secs) = state.idle_for_secs {
-                            summary_row(
-                                ui,
-                                "Idle",
-                                &format!(
-                                    "{:.0}s / {}s",
-                                    idle_for_secs, config.general.idle_wait_seconds
-                                ),
-                            );
-                        }
-
-                        let cpu_text = if let Some(cpu_average_percent) = state.cpu_average_percent
-                        {
-                            format!(
-                                "{:.1}% / {}%",
-                                cpu_average_percent, config.general.low_power_cpu_threshold_percent
-                            )
-                        } else {
-                            format!(
-                                "Gathering samples ({}s window)",
-                                config.general.low_power_cpu_quiet_window_seconds
-                            )
-                        };
-                        summary_row(ui, "CPU Quiet Window Avg", &cpu_text);
-
-                        summary_row(
-                            ui,
-                            "Low Power Gates",
-                            &format!(
-                                "input={}  cpu={}",
-                                if state.low_power_ready_input {
-                                    "ready"
-                                } else {
-                                    "waiting"
-                                },
-                                if state.low_power_ready_cpu {
-                                    "ready"
-                                } else {
-                                    "waiting"
-                                }
-                            ),
-                        );
-                    });
-            },
-        );
+        let top_row_width = ui.available_width();
+        let top_tile_width = tile_width_for_available(top_row_width, DashboardTileWidth::Half);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            show_dashboard_tile(
+                ui,
+                "Overview",
+                top_tile_width,
+                Some(TOP_TILE_HEIGHT),
+                |_| {},
+                |ui| {
+                    render_overview_tile(ui, state, config, tx, plan_name);
+                },
+            );
+            ui.add_space(design::spacing::SECTION_GAP);
+            show_dashboard_tile(
+                ui,
+                "Current State",
+                top_tile_width,
+                Some(TOP_TILE_HEIGHT),
+                |_| {},
+                |ui| {
+                    render_current_state_tile(ui, state, config);
+                },
+            );
+        });
 
         ui.add_space(design::spacing::SECTION_GAP);
         let row_width = ui.available_width();
@@ -237,7 +181,7 @@ pub fn render(
                 |ui| {
                     ui.label(
                         RichText::new(format!(
-                            "Quiet-window CPU average over the last {} minutes",
+                            "CPU average over the last {} minutes",
                             usage_window_label
                         ))
                         .weak()
@@ -374,18 +318,19 @@ fn dashboard_tile(
     add_contents: impl FnOnce(&mut Ui),
 ) {
     let tile_width = tile_width_for_available(ui.available_width(), width);
-    show_dashboard_tile(ui, title, tile_width, add_actions, add_contents);
+    show_dashboard_tile(ui, title, tile_width, None, add_actions, add_contents);
 }
 
 fn show_dashboard_tile(
     ui: &mut Ui,
     title: &str,
     tile_width: f32,
+    tile_height: Option<f32>,
     add_actions: impl FnOnce(&mut Ui),
     add_contents: impl FnOnce(&mut Ui),
 ) {
     ui.allocate_ui_with_layout(
-        egui::vec2(tile_width, 0.0),
+        egui::vec2(tile_width, tile_height.unwrap_or(0.0)),
         Layout::top_down(Align::Min),
         |ui| {
             egui::Frame::none()
@@ -398,6 +343,9 @@ fn show_dashboard_tile(
                 ))
                 .show(ui, |ui| {
                     ui.set_width(tile_width - design::spacing::SECTION_PAD_X * 2.0);
+                    if let Some(tile_height) = tile_height {
+                        ui.set_min_height(tile_height - design::spacing::SECTION_PAD_Y * 2.0);
+                    }
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(title)
@@ -428,6 +376,163 @@ fn summary_row(ui: &mut Ui, label: &str, value: &str) {
     ui.end_row();
 }
 
+fn render_overview_tile(
+    ui: &mut Ui,
+    state: &AppState,
+    config: &Config,
+    tx: &mpsc::Sender<MonitorCommand>,
+    plan_name: &str,
+) {
+    if let Some(ref forced) = state.forced_plan {
+        ui.horizontal(|ui| {
+            ui.colored_label(egui::Color32::YELLOW, format!("Forced: {}", forced.name));
+            if ui.button("Resume Auto").clicked() {
+                let _ = tx.send(MonitorCommand::ForcePlan(None));
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    if let Some(ref err) = state.last_error {
+        ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
+        ui.add_space(6.0);
+    }
+
+    egui::Grid::new("dashboard_overview_grid")
+        .num_columns(2)
+        .spacing([18.0, 10.0])
+        .min_col_width(140.0)
+        .show(ui, |ui| {
+            summary_row(ui, "Current Plan", plan_name);
+            summary_row(ui, "Monitor", monitor_status_text(state));
+            summary_row(
+                ui,
+                "Idle Wait",
+                &format!("{}s", config.general.idle_wait_seconds),
+            );
+            summary_row(
+                ui,
+                "CPU Avg Window",
+                &format!("{}s", config.general.cpu_average_window_seconds),
+            );
+            summary_row(
+                ui,
+                "Turbo Rescue",
+                if config.general.turbo_rescue_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+            );
+            summary_row(
+                ui,
+                "Turbo Trigger",
+                &format!(
+                    ">{}%, {}s above base",
+                    config.general.turbo_rescue_cpu_threshold_percent,
+                    config.general.turbo_rescue_window_seconds
+                ),
+            );
+
+            if !state.matched_processes.is_empty() {
+                summary_row(ui, "Active Triggers", &state.matched_processes.join(", "));
+            }
+
+            if let Some(r) = state.hold_remaining_secs.filter(|r| *r > 0.0) {
+                summary_row(ui, "Hold Timer", &format!("{:.0}s remaining", r));
+            }
+        });
+}
+
+fn render_current_state_tile(ui: &mut Ui, state: &AppState, config: &Config) {
+    egui::Grid::new("dashboard_current_state_grid")
+        .num_columns(2)
+        .spacing([18.0, 10.0])
+        .min_col_width(140.0)
+        .show(ui, |ui| {
+            summary_row(ui, "Power Source", power_source_text(state).as_str());
+
+            if let Some(idle_for_secs) = state.idle_for_secs {
+                summary_row(
+                    ui,
+                    "Idle",
+                    &format!(
+                        "{:.0}s / {}s",
+                        idle_for_secs, config.general.idle_wait_seconds
+                    ),
+                );
+            }
+
+            if let Some(cpu_info) = &state.cpu_info {
+                let cpu_name = if cpu_info.brand.is_empty() {
+                    "Unknown CPU"
+                } else {
+                    cpu_info.brand.as_str()
+                };
+                summary_row(ui, "CPU", cpu_name);
+                summary_row(
+                    ui,
+                    "Base Speed",
+                    &cpu_info
+                        .base_mhz
+                        .map(format_mhz)
+                        .unwrap_or_else(|| "Unavailable".to_string()),
+                );
+            } else {
+                summary_row(ui, "CPU", "Unavailable");
+            }
+
+            summary_row(
+                ui,
+                "Current CPU Speed",
+                &state
+                    .cpu_frequency
+                    .max_mhz
+                    .map(format_mhz)
+                    .unwrap_or_else(|| "Unavailable".to_string()),
+            );
+
+            let cpu_text = if let Some(cpu_average_percent) = state.cpu_average_percent {
+                format!(
+                    "{:.1}% / {}%",
+                    cpu_average_percent, config.general.cpu_average_threshold_percent
+                )
+            } else {
+                format!(
+                    "Gathering samples ({}s window)",
+                    config.general.cpu_average_window_seconds
+                )
+            };
+            summary_row(
+                ui,
+                &format!(
+                    "CPU Average ({}s)",
+                    config.general.cpu_average_window_seconds
+                ),
+                &cpu_text,
+            );
+            summary_row(ui, "Turbo Rescue State", &state.turbo_rescue_state);
+
+            summary_row(
+                ui,
+                "Low Power Gates",
+                &format!(
+                    "input={}  cpu={}",
+                    if state.low_power_ready_input {
+                        "ready"
+                    } else {
+                        "waiting"
+                    },
+                    if state.low_power_ready_cpu {
+                        "ready"
+                    } else {
+                        "waiting"
+                    }
+                ),
+            );
+        });
+}
+
 fn power_source_text(state: &AppState) -> String {
     let bat = &state.battery;
     if bat.percent.is_none() {
@@ -452,6 +557,14 @@ fn monitor_status_text(state: &AppState) -> &'static str {
     }
 }
 
+fn format_mhz(mhz: u32) -> String {
+    if mhz >= 1000 {
+        format!("{:.2} GHz", mhz as f32 / 1000.0)
+    } else {
+        format!("{} MHz", mhz)
+    }
+}
+
 fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &Config) {
     let desired_width = ui.available_width().max(160.0);
     let (rect, response) =
@@ -471,7 +584,7 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
             Align2::CENTER_CENTER,
             format!(
                 "Gathering CPU quiet-window samples ({}s window)",
-                config.general.low_power_cpu_quiet_window_seconds
+                config.general.cpu_average_window_seconds
             ),
             egui::TextStyle::Body.resolve(ui.style()),
             visuals.weak_text_color(),
@@ -483,7 +596,7 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
         Pos2::new(rect.left() + 38.0, rect.top() + 12.0),
         Pos2::new(rect.right() - 12.0, rect.bottom() - 12.0),
     );
-    let threshold = config.general.low_power_cpu_threshold_percent as f32;
+    let threshold = config.general.cpu_average_threshold_percent as f32;
     let y_max = CPU_GRAPH_Y_MAX;
     let latest = chrono::Local::now();
     let window_start =
@@ -528,7 +641,7 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
     painter.text(
         Pos2::new(plot_rect.left(), threshold_y - 4.0),
         Align2::LEFT_BOTTOM,
-        format!("{}%", config.general.low_power_cpu_threshold_percent),
+        format!("{}%", config.general.cpu_average_threshold_percent),
         egui::TextStyle::Small.resolve(ui.style()),
         CPU_GATE_COLOR,
     );

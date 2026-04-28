@@ -1,4 +1,5 @@
 // src/config.rs
+use crate::types::PlanProcessorRecommendation;
 use crate::types::PowerPlan;
 use anyhow::Result as AnyResult;
 use serde::{Deserialize, Serialize};
@@ -84,12 +85,36 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub low_power_plan_guid: String,
     pub performance_plan_guid: String,
+    #[serde(default = "default_standard_cpu_min_percent")]
+    pub standard_cpu_min_percent: u8,
+    #[serde(default = "default_standard_cpu_max_percent")]
+    pub standard_cpu_max_percent: u8,
+    #[serde(default = "default_performance_cpu_min_percent")]
+    pub performance_cpu_min_percent: u8,
+    #[serde(default = "default_performance_cpu_max_percent")]
+    pub performance_cpu_max_percent: u8,
+    #[serde(default = "default_low_power_cpu_min_percent")]
+    pub low_power_cpu_min_percent: u8,
+    #[serde(default = "default_low_power_cpu_max_percent")]
+    pub low_power_cpu_max_percent: u8,
     #[serde(default = "default_idle_wait_seconds")]
     pub idle_wait_seconds: u64,
-    #[serde(default = "default_low_power_cpu_threshold_percent")]
-    pub low_power_cpu_threshold_percent: u8,
-    #[serde(default = "default_low_power_cpu_quiet_window_seconds")]
-    pub low_power_cpu_quiet_window_seconds: u64,
+    #[serde(
+        default = "default_cpu_average_threshold_percent",
+        alias = "low_power_cpu_threshold_percent"
+    )]
+    pub cpu_average_threshold_percent: u8,
+    #[serde(
+        default = "default_cpu_average_window_seconds",
+        alias = "low_power_cpu_quiet_window_seconds"
+    )]
+    pub cpu_average_window_seconds: u64,
+    #[serde(default = "default_turbo_rescue_enabled")]
+    pub turbo_rescue_enabled: bool,
+    #[serde(default = "default_turbo_rescue_cpu_threshold_percent")]
+    pub turbo_rescue_cpu_threshold_percent: u8,
+    #[serde(default = "default_turbo_rescue_window_seconds")]
+    pub turbo_rescue_window_seconds: u64,
     #[serde(
         default = "default_usage_trend_window_minutes",
         deserialize_with = "deserialize_usage_trend_window_minutes"
@@ -106,11 +131,38 @@ pub struct GeneralConfig {
 fn default_idle_wait_seconds() -> u64 {
     600
 }
-fn default_low_power_cpu_threshold_percent() -> u8 {
+fn default_standard_cpu_min_percent() -> u8 {
+    PlanProcessorRecommendation::standard_default().min_percent as u8
+}
+fn default_standard_cpu_max_percent() -> u8 {
+    PlanProcessorRecommendation::standard_default().max_percent as u8
+}
+fn default_performance_cpu_min_percent() -> u8 {
+    PlanProcessorRecommendation::performance_default().min_percent as u8
+}
+fn default_performance_cpu_max_percent() -> u8 {
+    PlanProcessorRecommendation::performance_default().max_percent as u8
+}
+fn default_low_power_cpu_min_percent() -> u8 {
+    PlanProcessorRecommendation::low_power_default().min_percent as u8
+}
+fn default_low_power_cpu_max_percent() -> u8 {
+    PlanProcessorRecommendation::low_power_default().max_percent as u8
+}
+fn default_cpu_average_threshold_percent() -> u8 {
     10
 }
-fn default_low_power_cpu_quiet_window_seconds() -> u64 {
+fn default_cpu_average_window_seconds() -> u64 {
     60
+}
+fn default_turbo_rescue_enabled() -> bool {
+    true
+}
+fn default_turbo_rescue_cpu_threshold_percent() -> u8 {
+    10
+}
+fn default_turbo_rescue_window_seconds() -> u64 {
+    15
 }
 fn default_usage_trend_window_minutes() -> u64 {
     15
@@ -160,9 +212,18 @@ impl Default for Config {
                 standard_plan_guid: String::new(),
                 low_power_plan_guid: String::new(),
                 performance_plan_guid: String::new(),
+                standard_cpu_min_percent: default_standard_cpu_min_percent(),
+                standard_cpu_max_percent: default_standard_cpu_max_percent(),
+                performance_cpu_min_percent: default_performance_cpu_min_percent(),
+                performance_cpu_max_percent: default_performance_cpu_max_percent(),
+                low_power_cpu_min_percent: default_low_power_cpu_min_percent(),
+                low_power_cpu_max_percent: default_low_power_cpu_max_percent(),
                 idle_wait_seconds: default_idle_wait_seconds(),
-                low_power_cpu_threshold_percent: default_low_power_cpu_threshold_percent(),
-                low_power_cpu_quiet_window_seconds: default_low_power_cpu_quiet_window_seconds(),
+                cpu_average_threshold_percent: default_cpu_average_threshold_percent(),
+                cpu_average_window_seconds: default_cpu_average_window_seconds(),
+                turbo_rescue_enabled: default_turbo_rescue_enabled(),
+                turbo_rescue_cpu_threshold_percent: default_turbo_rescue_cpu_threshold_percent(),
+                turbo_rescue_window_seconds: default_turbo_rescue_window_seconds(),
                 usage_trend_window_minutes: default_usage_trend_window_minutes(),
                 plan_time_range_mode: PlanTimeRangeMode::default(),
                 appearance_mode: AppearanceMode::default(),
@@ -249,9 +310,24 @@ mod tests {
         assert!(c.general.standard_plan_guid.is_empty());
         assert!(c.general.low_power_plan_guid.is_empty());
         assert!(c.general.performance_plan_guid.is_empty());
+        assert_eq!(
+            c.general.standard_recommendation(),
+            PlanProcessorRecommendation::standard_default()
+        );
+        assert_eq!(
+            c.general.performance_recommendation(),
+            PlanProcessorRecommendation::performance_default()
+        );
+        assert_eq!(
+            c.general.low_power_recommendation(),
+            PlanProcessorRecommendation::low_power_default()
+        );
         assert_eq!(c.general.idle_wait_seconds, 600);
-        assert_eq!(c.general.low_power_cpu_threshold_percent, 10);
-        assert_eq!(c.general.low_power_cpu_quiet_window_seconds, 60);
+        assert_eq!(c.general.cpu_average_threshold_percent, 10);
+        assert_eq!(c.general.cpu_average_window_seconds, 60);
+        assert!(c.general.turbo_rescue_enabled);
+        assert_eq!(c.general.turbo_rescue_cpu_threshold_percent, 10);
+        assert_eq!(c.general.turbo_rescue_window_seconds, 15);
         assert_eq!(c.general.usage_trend_window_minutes, 15);
         assert_eq!(
             c.general.plan_time_range_mode,
@@ -353,11 +429,59 @@ processes = []
 
         assert_eq!(c.general.idle_wait_seconds, 600);
         assert_eq!(c.general.usage_trend_window_minutes, 90);
+        assert_eq!(c.general.cpu_average_threshold_percent, 10);
+        assert_eq!(c.general.cpu_average_window_seconds, 60);
         assert_eq!(
             c.general.plan_time_range_mode,
             PlanTimeRangeMode::AllRetained
         );
         assert_eq!(c.general.appearance_mode, AppearanceMode::Light);
+    }
+
+    #[test]
+    fn test_legacy_low_power_cpu_fields_load_as_shared_cpu_average_fields() {
+        let text = r#"
+[general]
+poll_interval_ms = 500
+hold_performance_seconds = 25
+standard_plan_guid = "standard-guid"
+low_power_plan_guid = "low-guid"
+performance_plan_guid = "perf-guid"
+idle_wait_seconds = 600
+low_power_cpu_threshold_percent = 14
+low_power_cpu_quiet_window_seconds = 75
+usage_trend_window_minutes = 30
+plan_time_range_mode = "match_usage_trend"
+appearance_mode = "dark"
+promote_on_battery = false
+show_tray_balloon_on_switch = true
+
+[autostart]
+registered = false
+
+[watchlist]
+processes = []
+"#;
+
+        let c: Config = toml::from_str(text).unwrap();
+
+        assert_eq!(c.general.cpu_average_threshold_percent, 14);
+        assert_eq!(c.general.cpu_average_window_seconds, 75);
+        assert!(c.general.turbo_rescue_enabled);
+    }
+
+    #[test]
+    fn test_shared_cpu_average_fields_serialize_with_new_names() {
+        let mut c = Config::default();
+        c.general.cpu_average_threshold_percent = 18;
+        c.general.cpu_average_window_seconds = 90;
+
+        let text = toml::to_string_pretty(&c).unwrap();
+
+        assert!(text.contains("cpu_average_threshold_percent = 18"));
+        assert!(text.contains("cpu_average_window_seconds = 90"));
+        assert!(!text.contains("low_power_cpu_threshold_percent"));
+        assert!(!text.contains("low_power_cpu_quiet_window_seconds"));
     }
 
     #[test]
@@ -503,4 +627,27 @@ pub fn initialize_plan_selection(
         available_plans,
         &discovered_performance.unwrap_or_else(|| config.general.standard_plan_guid.clone()),
     );
+}
+
+impl GeneralConfig {
+    pub fn standard_recommendation(&self) -> PlanProcessorRecommendation {
+        PlanProcessorRecommendation::new(
+            self.standard_cpu_min_percent as u32,
+            self.standard_cpu_max_percent as u32,
+        )
+    }
+
+    pub fn performance_recommendation(&self) -> PlanProcessorRecommendation {
+        PlanProcessorRecommendation::new(
+            self.performance_cpu_min_percent as u32,
+            self.performance_cpu_max_percent as u32,
+        )
+    }
+
+    pub fn low_power_recommendation(&self) -> PlanProcessorRecommendation {
+        PlanProcessorRecommendation::new(
+            self.low_power_cpu_min_percent as u32,
+            self.low_power_cpu_max_percent as u32,
+        )
+    }
 }

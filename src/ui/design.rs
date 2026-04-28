@@ -116,6 +116,14 @@ pub fn setting_label(ui: &mut Ui, label: &str, description: &str) {
 }
 
 pub fn status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response {
+    status_badge_sized(ui, text, kind, false)
+}
+
+pub fn compact_status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response {
+    status_badge_sized(ui, text, kind, true)
+}
+
+fn status_badge_sized(ui: &mut Ui, text: &str, kind: StatusKind, compact: bool) -> egui::Response {
     let accent = match kind {
         StatusKind::Success => color::SUCCESS,
         StatusKind::Muted => ui.visuals().weak_text_color(),
@@ -125,28 +133,54 @@ pub fn status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response
         StatusKind::Muted => ui.visuals().text_color(),
         _ => accent,
     };
-    let galley = ui.painter().layout_no_wrap(
-        text.to_owned(),
-        egui::TextStyle::Body.resolve(ui.style()),
-        text_color,
-    );
-    let desired = egui::vec2((galley.size().x + 38.0).max(70.0), 26.0);
+    let text_style = if compact {
+        egui::TextStyle::Small
+    } else {
+        egui::TextStyle::Body
+    };
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), text_style.resolve(ui.style()), text_color);
+    let desired = if compact {
+        egui::vec2((galley.size().x + 34.0).max(78.0), 23.0)
+    } else {
+        egui::vec2((galley.size().x + 48.0).max(92.0), 28.0)
+    };
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let fill = ui.visuals().extreme_bg_color;
     let stroke = Stroke::new(1.0, accent.gamma_multiply(0.65));
     ui.painter().rect(rect, radius::PILL, fill, stroke);
 
-    let dot_center = egui::pos2(rect.left() + 14.0, rect.center().y);
-    ui.painter().circle_filled(dot_center, 6.0, accent);
+    let dot_radius = if compact { 5.0 } else { 6.0 };
+    let dot_center = egui::pos2(
+        rect.left() + if compact { 12.0 } else { 14.0 },
+        rect.center().y,
+    );
+    ui.painter().circle_filled(dot_center, dot_radius, accent);
     if matches!(kind, StatusKind::Success) {
         draw_checkmark(ui, dot_center);
     }
     ui.painter().galley(
-        egui::pos2(rect.left() + 27.0, rect.center().y - galley.size().y / 2.0),
+        egui::pos2(
+            rect.left() + if compact { 24.0 } else { 30.0 },
+            rect.center().y - galley.size().y / 2.0,
+        ),
         galley,
         text_color,
     );
     response
+}
+
+pub fn subsection_heading(ui: &mut Ui, title: &str) {
+    ui.label(RichText::new(title).size(type_size::LABEL).strong());
+}
+
+pub fn tabs<T: Copy + PartialEq>(ui: &mut Ui, selected: &mut T, labels: &[(T, &str)]) {
+    ui.horizontal(|ui| {
+        for (value, label) in labels {
+            ui.selectable_value(selected, *value, *label);
+        }
+    });
 }
 
 pub fn enabled_badge_button(ui: &mut Ui, enabled: bool) -> egui::Response {
