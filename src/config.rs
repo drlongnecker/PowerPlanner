@@ -1,4 +1,5 @@
 // src/config.rs
+use crate::energy::{CpuPowerProfile, EnergyRate};
 use crate::types::PlanProcessorRecommendation;
 use crate::types::PowerPlan;
 use anyhow::Result as AnyResult;
@@ -37,6 +38,37 @@ impl<'de> Deserialize<'de> for PlanTimeRangeMode {
             .map(|value| match value.as_str() {
                 "all_retained" => Self::AllRetained,
                 _ => Self::MatchUsageTrend,
+            })
+            .unwrap_or_default();
+        Ok(mode)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PowerUsageRangeMode {
+    RecentMinutes,
+    AllRetained,
+}
+
+impl Default for PowerUsageRangeMode {
+    fn default() -> Self {
+        Self::RecentMinutes
+    }
+}
+
+impl<'de> Deserialize<'de> for PowerUsageRangeMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)
+            .unwrap_or(toml::Value::String("recent_minutes".to_string()));
+        let mode = value
+            .as_str()
+            .map(|value| value.to_ascii_lowercase())
+            .map(|value| match value.as_str() {
+                "all_retained" => Self::AllRetained,
+                _ => Self::RecentMinutes,
             })
             .unwrap_or_default();
         Ok(mode)
@@ -124,6 +156,22 @@ pub struct GeneralConfig {
     pub plan_time_range_mode: PlanTimeRangeMode,
     #[serde(default)]
     pub appearance_mode: AppearanceMode,
+    #[serde(default)]
+    pub power_usage_range_mode: PowerUsageRangeMode,
+    #[serde(default = "default_energy_estimates_enabled")]
+    pub energy_estimates_enabled: bool,
+    #[serde(default = "default_energy_rate_dollars_per_kwh")]
+    pub energy_rate_dollars_per_kwh: f64,
+    #[serde(default = "default_energy_rate_source_label")]
+    pub energy_rate_source_label: String,
+    #[serde(default = "default_cpu_idle_watts")]
+    pub cpu_idle_watts: f64,
+    #[serde(default = "default_cpu_base_watts")]
+    pub cpu_base_watts: f64,
+    #[serde(default = "default_cpu_turbo_watts")]
+    pub cpu_turbo_watts: f64,
+    #[serde(default = "default_cpu_power_source_label")]
+    pub cpu_power_source_label: String,
     pub promote_on_battery: bool,
     pub show_tray_balloon_on_switch: bool,
 }
@@ -166,6 +214,27 @@ fn default_turbo_rescue_window_seconds() -> u64 {
 }
 fn default_usage_trend_window_minutes() -> u64 {
     15
+}
+fn default_energy_estimates_enabled() -> bool {
+    true
+}
+fn default_energy_rate_dollars_per_kwh() -> f64 {
+    0.15
+}
+fn default_energy_rate_source_label() -> String {
+    "Manual".to_string()
+}
+fn default_cpu_idle_watts() -> f64 {
+    12.0
+}
+fn default_cpu_base_watts() -> f64 {
+    65.0
+}
+fn default_cpu_turbo_watts() -> f64 {
+    125.0
+}
+fn default_cpu_power_source_label() -> String {
+    "Estimated from CPU profile".to_string()
 }
 
 fn is_supported_usage_trend_window_minutes(value: u64) -> bool {
@@ -227,6 +296,14 @@ impl Default for Config {
                 usage_trend_window_minutes: default_usage_trend_window_minutes(),
                 plan_time_range_mode: PlanTimeRangeMode::default(),
                 appearance_mode: AppearanceMode::default(),
+                power_usage_range_mode: PowerUsageRangeMode::default(),
+                energy_estimates_enabled: default_energy_estimates_enabled(),
+                energy_rate_dollars_per_kwh: default_energy_rate_dollars_per_kwh(),
+                energy_rate_source_label: default_energy_rate_source_label(),
+                cpu_idle_watts: default_cpu_idle_watts(),
+                cpu_base_watts: default_cpu_base_watts(),
+                cpu_turbo_watts: default_cpu_turbo_watts(),
+                cpu_power_source_label: default_cpu_power_source_label(),
                 promote_on_battery: false,
                 show_tray_balloon_on_switch: true,
             },
@@ -334,6 +411,10 @@ mod tests {
             PlanTimeRangeMode::MatchUsageTrend
         );
         assert_eq!(c.general.appearance_mode, AppearanceMode::System);
+        assert_eq!(
+            c.general.power_usage_range_mode,
+            PowerUsageRangeMode::RecentMinutes
+        );
         assert!(!c.general.promote_on_battery);
         assert!(c.watchlist.processes.is_empty());
         assert!(!c.autostart.registered);
@@ -413,8 +494,9 @@ low_power_cpu_threshold_percent = 10
 low_power_cpu_quiet_window_seconds = 60
 usage_trend_window_minutes = 90
 plan_time_range_mode = "all_retained"
-appearance_mode = "light"
-promote_on_battery = false
+        appearance_mode = "light"
+        power_usage_range_mode = "all_retained"
+        promote_on_battery = false
 show_tray_balloon_on_switch = true
 
 [autostart]
@@ -436,6 +518,10 @@ processes = []
             PlanTimeRangeMode::AllRetained
         );
         assert_eq!(c.general.appearance_mode, AppearanceMode::Light);
+        assert_eq!(
+            c.general.power_usage_range_mode,
+            PowerUsageRangeMode::AllRetained
+        );
     }
 
     #[test]
@@ -498,8 +584,9 @@ low_power_cpu_threshold_percent = 10
 low_power_cpu_quiet_window_seconds = 60
 usage_trend_window_minutes = 17
 plan_time_range_mode = "lifetime"
-appearance_mode = "sepia"
-promote_on_battery = false
+        appearance_mode = "sepia"
+        power_usage_range_mode = "lifetime"
+        promote_on_battery = false
 show_tray_balloon_on_switch = true
 
 [autostart]
@@ -517,6 +604,52 @@ processes = []
             PlanTimeRangeMode::MatchUsageTrend
         );
         assert_eq!(c.general.appearance_mode, AppearanceMode::System);
+        assert_eq!(
+            c.general.power_usage_range_mode,
+            PowerUsageRangeMode::RecentMinutes
+        );
+    }
+
+    #[test]
+    fn test_default_energy_estimate_values_are_enabled_and_manual() {
+        let c = Config::default();
+
+        assert!(c.general.energy_estimates_enabled);
+        assert_eq!(c.general.energy_rate_dollars_per_kwh, 0.15);
+        assert_eq!(c.general.energy_rate_source_label, "Manual");
+        assert_eq!(c.general.cpu_idle_watts, 12.0);
+        assert_eq!(c.general.cpu_base_watts, 65.0);
+        assert_eq!(c.general.cpu_turbo_watts, 125.0);
+        assert_eq!(
+            c.general.cpu_power_source_label,
+            "Estimated from CPU profile"
+        );
+    }
+
+    #[test]
+    fn test_energy_estimate_values_roundtrip_through_toml() {
+        let mut c = Config::default();
+        c.general.energy_estimates_enabled = false;
+        c.general.energy_rate_dollars_per_kwh = 0.23;
+        c.general.energy_rate_source_label = "Kansas City estimate".into();
+        c.general.cpu_idle_watts = 10.0;
+        c.general.cpu_base_watts = 72.0;
+        c.general.cpu_turbo_watts = 148.0;
+        c.general.cpu_power_source_label = "Manual CPU profile".into();
+
+        let text = toml::to_string_pretty(&c).unwrap();
+        let loaded: Config = toml::from_str(&text).unwrap();
+
+        assert!(!loaded.general.energy_estimates_enabled);
+        assert_eq!(loaded.general.energy_rate_dollars_per_kwh, 0.23);
+        assert_eq!(
+            loaded.general.energy_rate_source_label,
+            "Kansas City estimate"
+        );
+        assert_eq!(loaded.general.cpu_idle_watts, 10.0);
+        assert_eq!(loaded.general.cpu_base_watts, 72.0);
+        assert_eq!(loaded.general.cpu_turbo_watts, 148.0);
+        assert_eq!(loaded.general.cpu_power_source_label, "Manual CPU profile");
     }
 
     #[test]
@@ -649,5 +782,32 @@ impl GeneralConfig {
             self.low_power_cpu_min_percent as u32,
             self.low_power_cpu_max_percent as u32,
         )
+    }
+
+    pub fn energy_rate(&self) -> EnergyRate {
+        EnergyRate {
+            dollars_per_kwh: self.energy_rate_dollars_per_kwh.max(0.0),
+            source_label: if self.energy_rate_source_label.trim().is_empty() {
+                default_energy_rate_source_label()
+            } else {
+                self.energy_rate_source_label.clone()
+            },
+        }
+    }
+
+    pub fn cpu_power_profile(&self) -> CpuPowerProfile {
+        let idle = self.cpu_idle_watts.max(0.0);
+        let base = self.cpu_base_watts.max(idle);
+        let turbo = self.cpu_turbo_watts.max(base);
+        CpuPowerProfile {
+            idle_watts: idle,
+            base_watts: base,
+            turbo_watts: turbo,
+            source_label: if self.cpu_power_source_label.trim().is_empty() {
+                default_cpu_power_source_label()
+            } else {
+                self.cpu_power_source_label.clone()
+            },
+        }
     }
 }

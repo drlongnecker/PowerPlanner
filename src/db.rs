@@ -1,5 +1,5 @@
 // src/db.rs
-use crate::types::{CpuHistoryPoint, PowerEvent};
+use crate::types::{CpuHistoryEnergyEstimate, CpuHistoryPoint, PowerEvent};
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection};
@@ -41,14 +41,55 @@ fn migrate(conn: &Connection) -> Result<()> {
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             ts              INTEGER NOT NULL,
             average_percent REAL    NOT NULL,
+            current_mhz     INTEGER,
+            base_mhz        INTEGER,
             plan_kind       INTEGER NOT NULL,
             plan_name       TEXT    NOT NULL,
-            trigger         TEXT    NOT NULL
+            trigger         TEXT    NOT NULL,
+            estimated_watts REAL,
+            estimated_kwh REAL,
+            estimated_cost_usd REAL,
+            baseline_watts REAL,
+            baseline_cost_usd REAL,
+            estimated_savings_usd REAL
         );
         CREATE INDEX IF NOT EXISTS idx_dashboard_samples_ts ON dashboard_samples(ts);
     ",
     )?;
+    add_dashboard_energy_columns(conn)?;
     Ok(())
+}
+
+fn add_dashboard_energy_columns(conn: &Connection) -> Result<()> {
+    for (name, ty) in [
+        ("current_mhz", "INTEGER"),
+        ("base_mhz", "INTEGER"),
+        ("estimated_watts", "REAL"),
+        ("estimated_kwh", "REAL"),
+        ("estimated_cost_usd", "REAL"),
+        ("baseline_watts", "REAL"),
+        ("baseline_cost_usd", "REAL"),
+        ("estimated_savings_usd", "REAL"),
+    ] {
+        if !dashboard_samples_has_column(conn, name)? {
+            conn.execute(
+                &format!("ALTER TABLE dashboard_samples ADD COLUMN {} {}", name, ty),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn dashboard_samples_has_column(conn: &Connection, name: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(dashboard_samples)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn insert_event(conn: &Connection, event: &PowerEvent) -> Result<()> {
@@ -90,14 +131,26 @@ pub fn query_recent(conn: &Connection, limit: usize) -> Result<Vec<PowerEvent>> 
 
 pub fn insert_dashboard_sample(conn: &Connection, sample: &CpuHistoryPoint) -> Result<()> {
     conn.execute(
-        "INSERT INTO dashboard_samples (ts, average_percent, plan_kind, plan_name, trigger)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO dashboard_samples (
+             ts, average_percent, current_mhz, base_mhz, plan_kind, plan_name, trigger,
+             estimated_watts, estimated_kwh, estimated_cost_usd,
+             baseline_watts, baseline_cost_usd, estimated_savings_usd
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             sample.ts.timestamp_millis(),
             sample.average_percent,
+            sample.current_mhz.map(|mhz| mhz as i64),
+            sample.base_mhz.map(|mhz| mhz as i64),
             sample.plan_kind.storage_value(),
             sample.plan_name,
             sample.trigger,
+            sample.energy.map(|energy| energy.estimated_watts),
+            sample.energy.map(|energy| energy.estimated_kwh),
+            sample.energy.map(|energy| energy.estimated_cost_usd),
+            sample.energy.map(|energy| energy.baseline_watts),
+            sample.energy.map(|energy| energy.baseline_cost_usd),
+            sample.energy.map(|energy| energy.estimated_savings_usd),
         ],
     )?;
     prune_dashboard_samples(conn, sample.ts)?;
@@ -110,7 +163,9 @@ pub fn query_dashboard_samples_recent(
 ) -> Result<Vec<CpuHistoryPoint>> {
     let threshold = Local::now() - chrono::Duration::minutes(minutes.max(1));
     let mut stmt = conn.prepare(
-        "SELECT ts, average_percent, plan_kind, plan_name, trigger
+        "SELECT ts, average_percent, current_mhz, base_mhz, plan_kind, plan_name, trigger,
+                estimated_watts, estimated_kwh, estimated_cost_usd,
+                baseline_watts, baseline_cost_usd, estimated_savings_usd
          FROM dashboard_samples
          WHERE ts >= ?1
          ORDER BY ts ASC",
@@ -119,9 +174,12 @@ pub fn query_dashboard_samples_recent(
         Ok(CpuHistoryPoint {
             ts: Local.timestamp_millis_opt(row.get(0)?).unwrap(),
             average_percent: row.get(1)?,
-            plan_kind: crate::types::CpuHistoryPlanKind::from_storage(row.get(2)?),
-            plan_name: row.get(3)?,
-            trigger: row.get(4)?,
+            current_mhz: optional_mhz(row.get(2)?),
+            base_mhz: optional_mhz(row.get(3)?),
+            plan_kind: crate::types::CpuHistoryPlanKind::from_storage(row.get(4)?),
+            plan_name: row.get(5)?,
+            trigger: row.get(6)?,
+            energy: row_energy(row)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -129,7 +187,9 @@ pub fn query_dashboard_samples_recent(
 
 pub fn query_all_dashboard_samples(conn: &Connection) -> Result<Vec<CpuHistoryPoint>> {
     let mut stmt = conn.prepare(
-        "SELECT ts, average_percent, plan_kind, plan_name, trigger
+        "SELECT ts, average_percent, current_mhz, base_mhz, plan_kind, plan_name, trigger,
+                estimated_watts, estimated_kwh, estimated_cost_usd,
+                baseline_watts, baseline_cost_usd, estimated_savings_usd
          FROM dashboard_samples
          ORDER BY ts ASC",
     )?;
@@ -137,12 +197,34 @@ pub fn query_all_dashboard_samples(conn: &Connection) -> Result<Vec<CpuHistoryPo
         Ok(CpuHistoryPoint {
             ts: Local.timestamp_millis_opt(row.get(0)?).unwrap(),
             average_percent: row.get(1)?,
-            plan_kind: crate::types::CpuHistoryPlanKind::from_storage(row.get(2)?),
-            plan_name: row.get(3)?,
-            trigger: row.get(4)?,
+            current_mhz: optional_mhz(row.get(2)?),
+            base_mhz: optional_mhz(row.get(3)?),
+            plan_kind: crate::types::CpuHistoryPlanKind::from_storage(row.get(4)?),
+            plan_name: row.get(5)?,
+            trigger: row.get(6)?,
+            energy: row_energy(row)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn row_energy(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<CpuHistoryEnergyEstimate>> {
+    let estimated_watts: Option<f64> = row.get(7)?;
+    let Some(estimated_watts) = estimated_watts else {
+        return Ok(None);
+    };
+    Ok(Some(CpuHistoryEnergyEstimate {
+        estimated_watts,
+        estimated_kwh: row.get::<_, Option<f64>>(8)?.unwrap_or_default(),
+        estimated_cost_usd: row.get::<_, Option<f64>>(9)?.unwrap_or_default(),
+        baseline_watts: row.get::<_, Option<f64>>(10)?.unwrap_or_default(),
+        baseline_cost_usd: row.get::<_, Option<f64>>(11)?.unwrap_or_default(),
+        estimated_savings_usd: row.get::<_, Option<f64>>(12)?.unwrap_or_default(),
+    }))
+}
+
+fn optional_mhz(value: Option<i64>) -> Option<u32> {
+    value.and_then(|mhz| u32::try_from(mhz).ok())
 }
 
 fn prune_dashboard_samples(conn: &Connection, now: chrono::DateTime<Local>) -> Result<usize> {
@@ -221,9 +303,12 @@ mod tests {
         CpuHistoryPoint {
             ts,
             average_percent,
+            current_mhz: None,
+            base_mhz: None,
             plan_kind,
             plan_name: plan_name.to_string(),
             trigger: trigger.to_string(),
+            energy: None,
         }
     }
 
@@ -368,5 +453,48 @@ mod tests {
 
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].plan_name, "Balanced");
+    }
+
+    #[test]
+    fn test_migrate_adds_energy_estimate_columns() {
+        let conn = in_memory();
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(dashboard_samples)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(columns.contains(&"estimated_watts".to_string()));
+        assert!(columns.contains(&"current_mhz".to_string()));
+        assert!(columns.contains(&"base_mhz".to_string()));
+        assert!(columns.contains(&"estimated_kwh".to_string()));
+        assert!(columns.contains(&"estimated_cost_usd".to_string()));
+        assert!(columns.contains(&"baseline_watts".to_string()));
+        assert!(columns.contains(&"baseline_cost_usd".to_string()));
+        assert!(columns.contains(&"estimated_savings_usd".to_string()));
+    }
+
+    #[test]
+    fn test_dashboard_samples_roundtrip_cpu_speed_context() {
+        let conn = in_memory();
+        let mut sample = make_dashboard_sample(
+            Local::now(),
+            "Balanced",
+            "standard",
+            16.0,
+            CpuHistoryPlanKind::Standard,
+        );
+        sample.current_mhz = Some(3200);
+        sample.base_mhz = Some(3500);
+
+        insert_dashboard_sample(&conn, &sample).unwrap();
+
+        let samples = query_all_dashboard_samples(&conn).unwrap();
+        assert_eq!(samples[0].current_mhz, Some(3200));
+        assert_eq!(samples[0].base_mhz, Some(3500));
+        assert_eq!(samples[0].average_percent, 16.0);
     }
 }

@@ -128,6 +128,16 @@ impl eframe::App for PowerPlannerApp {
             }
             if design::nav_item(
                 ui,
+                "Power Usage",
+                design::NavIcon::Power,
+                self.nav == Nav::PowerUsage,
+            )
+            .clicked()
+            {
+                self.nav = Nav::PowerUsage;
+            }
+            if design::nav_item(
+                ui,
                 "Settings",
                 design::NavIcon::Settings,
                 self.nav == Nav::Settings,
@@ -186,6 +196,9 @@ impl eframe::App for PowerPlannerApp {
             match self.nav {
                 Nav::Dashboard => {
                     crate::ui::dashboard::render(ui, &*state, &mut self.config, &self.cmd_tx);
+                }
+                Nav::PowerUsage => {
+                    crate::ui::power_usage::render(ui, &mut self.config, &self.cmd_tx);
                 }
                 Nav::WatchedApps => {
                     crate::ui::watched::render(ui, &*state, &self.cmd_tx, &mut self.config);

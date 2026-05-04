@@ -1,11 +1,15 @@
 // src/monitor.rs
 use crate::config::Config;
 use crate::db;
+use crate::energy::{
+    estimate_sample_energy, CpuPowerProvider, CpuPowerSample, EnergyRateProvider,
+    ManualRateProvider, ModeledCpuPowerProvider,
+};
 use crate::idle::{IdleReader, WindowsIdleReader};
 use crate::power::PowerApi;
 use crate::types::{
-    AppState, CpuFrequencySample, CpuHistoryPlanKind, CpuHistoryPoint, MonitorCommand, PowerEvent,
-    PowerPlan, RunningProcess,
+    AppState, CpuFrequencySample, CpuHistoryEnergyEstimate, CpuHistoryPlanKind, CpuHistoryPoint,
+    MonitorCommand, PowerEvent, PowerPlan, RunningProcess,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{mpsc, Arc, OnceLock, RwLock};
@@ -202,7 +206,13 @@ impl MonitorState {
         "standard".to_string()
     }
 
-    fn record_cpu_history(&mut self, now: Instant, trigger: &str) -> Option<CpuHistoryPoint> {
+    fn record_cpu_history(
+        &mut self,
+        now: Instant,
+        trigger: &str,
+        frequency: CpuFrequencySample,
+        cpu_base_mhz: Option<u32>,
+    ) -> Option<CpuHistoryPoint> {
         let Some(average_percent) = self.cpu_average_percent() else {
             return None;
         };
@@ -218,9 +228,12 @@ impl MonitorState {
         let point = CpuHistoryPoint {
             ts: chrono::Local::now(),
             average_percent,
+            current_mhz: frequency.max_mhz,
+            base_mhz: cpu_base_mhz,
             plan_kind: self.plan_kind_for_guid(&self.current_plan_guid),
             plan_name: self.plan_name_for_guid(&self.current_plan_guid),
             trigger: trigger.to_string(),
+            energy: self.energy_estimate_for_sample(average_percent, frequency, cpu_base_mhz),
         };
 
         self.dashboard_cpu_history.push_back(DashboardCpuSample {
@@ -237,6 +250,52 @@ impl MonitorState {
         }
 
         Some(point)
+    }
+
+    fn energy_estimate_for_sample(
+        &self,
+        cpu_average_percent: f32,
+        frequency: CpuFrequencySample,
+        cpu_base_mhz: Option<u32>,
+    ) -> Option<CpuHistoryEnergyEstimate> {
+        if !self.config.general.energy_estimates_enabled {
+            return None;
+        }
+
+        let power_provider = ModeledCpuPowerProvider::new(self.config.general.cpu_power_profile());
+        let rate_provider = ManualRateProvider::new(
+            self.config.general.energy_rate().dollars_per_kwh,
+            self.config.general.energy_rate().source_label,
+        );
+        let plan_kind = self.plan_kind_for_guid(&self.current_plan_guid);
+        let sample = CpuPowerSample {
+            cpu_average_percent,
+            current_mhz: frequency.max_mhz,
+            base_mhz: cpu_base_mhz,
+            plan_kind,
+        };
+        let estimated_watts = power_provider.estimated_watts(sample);
+        let baseline_watts = power_provider.estimated_watts(CpuPowerSample {
+            cpu_average_percent,
+            current_mhz: cpu_base_mhz.map(|base| base.saturating_add(101)),
+            base_mhz: cpu_base_mhz,
+            plan_kind: CpuHistoryPlanKind::Performance,
+        });
+        let estimate = estimate_sample_energy(
+            estimated_watts,
+            baseline_watts,
+            DASHBOARD_SAMPLE_INTERVAL,
+            rate_provider.current_rate(),
+        );
+
+        Some(CpuHistoryEnergyEstimate {
+            estimated_watts,
+            estimated_kwh: estimate.estimated_kwh,
+            estimated_cost_usd: estimate.estimated_cost_usd,
+            baseline_watts,
+            baseline_cost_usd: estimate.baseline_cost_usd,
+            estimated_savings_usd: estimate.estimated_savings_usd,
+        })
     }
 
     fn input_is_idle_enough(&self, idle_for: Duration) -> bool {
@@ -598,7 +657,12 @@ pub fn run(
                 });
 
             let history_trigger = state.current_trigger_description(&matched, idle_for, now);
-            if let Some(point) = state.record_cpu_history(now, &history_trigger) {
+            if let Some(point) = state.record_cpu_history(
+                now,
+                &history_trigger,
+                cpu_frequency,
+                cpu_info.as_ref().and_then(|info| info.base_mhz),
+            ) {
                 let _ = db::insert_dashboard_sample(&db_conn, &point);
             }
 
@@ -1073,12 +1137,17 @@ mod tests {
         let base = Instant::now();
 
         s.record_cpu_sample(base, 4.0);
-        s.record_cpu_history(base, "standard");
+        s.record_cpu_history(base, "standard", CpuFrequencySample::default(), None);
 
         assert!(s.dashboard_cpu_history.is_empty());
 
         s.record_cpu_sample(base + Duration::from_secs(30), 6.0);
-        s.record_cpu_history(base + Duration::from_secs(30), "standard");
+        s.record_cpu_history(
+            base + Duration::from_secs(30),
+            "standard",
+            CpuFrequencySample::default(),
+            None,
+        );
 
         assert_eq!(s.dashboard_cpu_history.len(), 1);
         assert_eq!(s.dashboard_cpu_history[0].point.average_percent, 5.0);
@@ -1098,7 +1167,12 @@ mod tests {
 
         s.record_cpu_sample(base, 4.0);
         s.record_cpu_sample(base + Duration::from_secs(30), 6.0);
-        s.record_cpu_history(base + Duration::from_secs(30), "startup");
+        s.record_cpu_history(
+            base + Duration::from_secs(30),
+            "startup",
+            CpuFrequencySample::default(),
+            None,
+        );
 
         assert_eq!(s.dashboard_cpu_history.len(), 1);
         assert_eq!(s.dashboard_cpu_history[0].point.plan_name, "Balanced");
@@ -1112,12 +1186,22 @@ mod tests {
 
         s.record_cpu_sample(base, 4.0);
         s.record_cpu_sample(base + Duration::from_secs(30), 6.0);
-        s.record_cpu_history(base + Duration::from_secs(30), "standard");
+        s.record_cpu_history(
+            base + Duration::from_secs(30),
+            "standard",
+            CpuFrequencySample::default(),
+            None,
+        );
 
         let sixteen_minutes_later = base + Duration::from_secs(16 * 60);
         s.record_cpu_sample(sixteen_minutes_later - Duration::from_secs(30), 7.0);
         s.record_cpu_sample(sixteen_minutes_later, 9.0);
-        s.record_cpu_history(sixteen_minutes_later, "standard");
+        s.record_cpu_history(
+            sixteen_minutes_later,
+            "standard",
+            CpuFrequencySample::default(),
+            None,
+        );
 
         assert_eq!(s.dashboard_cpu_history.len(), 1);
         assert_eq!(s.dashboard_cpu_history[0].point.average_percent, 8.0);
@@ -1138,7 +1222,12 @@ mod tests {
         s.record_cpu_sample(base, 15.0);
         s.record_cpu_sample(base + Duration::from_secs(30), 21.0);
         s.record_cpu_sample(base + Duration::from_secs(61), 18.0);
-        s.record_cpu_history(base + Duration::from_secs(61), "rustc.exe");
+        s.record_cpu_history(
+            base + Duration::from_secs(61),
+            "rustc.exe",
+            CpuFrequencySample::default(),
+            None,
+        );
 
         assert_eq!(s.dashboard_cpu_history.len(), 1);
         assert_eq!(
@@ -1204,9 +1293,24 @@ mod tests {
 
         s.record_cpu_sample(base, 4.0);
         s.record_cpu_sample(base + Duration::from_secs(30), 6.0);
-        let first = s.record_cpu_history(base + Duration::from_secs(30), "standard");
-        let second = s.record_cpu_history(base + Duration::from_secs(35), "standard");
-        let third = s.record_cpu_history(base + Duration::from_secs(60), "standard");
+        let first = s.record_cpu_history(
+            base + Duration::from_secs(30),
+            "standard",
+            CpuFrequencySample::default(),
+            None,
+        );
+        let second = s.record_cpu_history(
+            base + Duration::from_secs(35),
+            "standard",
+            CpuFrequencySample::default(),
+            None,
+        );
+        let third = s.record_cpu_history(
+            base + Duration::from_secs(60),
+            "standard",
+            CpuFrequencySample::default(),
+            None,
+        );
 
         assert!(first.is_some());
         assert!(second.is_none());

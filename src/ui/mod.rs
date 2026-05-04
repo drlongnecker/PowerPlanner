@@ -1,6 +1,7 @@
 pub mod dashboard;
 pub mod design;
 pub mod history;
+pub mod power_usage;
 pub mod settings;
 pub mod watched;
 
@@ -27,6 +28,7 @@ pub fn padded_page(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 pub enum Nav {
     #[default]
     Dashboard,
+    PowerUsage,
     WatchedApps,
     Settings,
     History,
@@ -46,6 +48,11 @@ mod tests {
         assert_eq!(design::spacing::SECTION_GAP, 12.0);
         assert_eq!(design::spacing::NAV_ROW_HEIGHT, 40.0);
         assert_eq!(design::radius::SECTION, 8.0);
+    }
+
+    #[test]
+    fn nav_includes_power_usage_as_own_surface() {
+        assert!(matches!(super::Nav::PowerUsage, super::Nav::PowerUsage));
     }
 
     #[test]

@@ -53,6 +53,7 @@ pub enum StatusKind {
 #[derive(Clone, Copy)]
 pub enum NavIcon {
     Dashboard,
+    Power,
     Apps,
     Settings,
     History,
@@ -373,6 +374,18 @@ fn draw_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color
                 ],
                 stroke,
             );
+        }
+        NavIcon::Power => {
+            let bolt = [
+                rect.left_top() + egui::vec2(10.0, 1.5),
+                rect.left_top() + egui::vec2(4.5, 9.5),
+                rect.left_top() + egui::vec2(9.0, 9.5),
+                rect.left_top() + egui::vec2(7.0, 16.5),
+                rect.left_top() + egui::vec2(14.0, 7.5),
+                rect.left_top() + egui::vec2(9.5, 7.5),
+                rect.left_top() + egui::vec2(10.0, 1.5),
+            ];
+            painter.add(egui::Shape::line(bolt.to_vec(), stroke));
         }
         NavIcon::Settings => {
             painter.circle_stroke(rect.center(), 5.4, stroke);

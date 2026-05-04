@@ -9,6 +9,34 @@ use std::sync::mpsc;
 
 const SETTINGS_COMBO_WIDTH: f32 = 230.0;
 const SETTINGS_VALUE_WIDTH: f32 = 132.0;
+const ENERGY_RATE_LINKS: [(&str, &str); 3] = [
+    (
+        "EnergySage local electricity costs",
+        "https://www.energysage.com/local-data/electricity-cost/",
+    ),
+    (
+        "EIA electricity data",
+        "https://www.eia.gov/electricity/data.php",
+    ),
+    (
+        "OpenEI Utility Rate Database",
+        "https://openei.org/services/doc/rest/util_rates/?version=8",
+    ),
+];
+const CPU_PROFILE_LINKS: [(&str, &str); 3] = [
+    (
+        "Intel processor specifications",
+        "https://www.intel.com/content/www/us/en/products/details/processors.html",
+    ),
+    (
+        "AMD processor specifications",
+        "https://www.amd.com/en/products/specifications/processors",
+    ),
+    (
+        "TechPowerUp CPU database",
+        "https://www.techpowerup.com/cpu-specs/",
+    ),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
@@ -16,6 +44,34 @@ enum SettingsTab {
     Standard,
     Performance,
     LowPower,
+    Energy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_tabs_include_energy_estimates() {
+        let labels = settings_tab_labels();
+
+        assert_eq!(labels.len(), 5);
+        assert!(labels
+            .iter()
+            .any(|(tab, label)| *tab == SettingsTab::Energy && *label == "Energy"));
+    }
+
+    #[test]
+    fn energy_settings_exposes_reference_links() {
+        assert_eq!(ENERGY_RATE_LINKS.len(), 3);
+        assert_eq!(CPU_PROFILE_LINKS.len(), 3);
+        assert!(ENERGY_RATE_LINKS
+            .iter()
+            .any(|(label, _)| label.contains("EIA")));
+        assert!(CPU_PROFILE_LINKS
+            .iter()
+            .any(|(label, _)| label.contains("Intel")));
+    }
 }
 
 pub fn render(
@@ -264,6 +320,7 @@ pub fn render(
                         changed = true;
                     }
                 }
+                SettingsTab::Energy => render_energy_section(ui, config, &mut changed),
             });
     });
 
@@ -273,12 +330,13 @@ pub fn render(
     }
 }
 
-fn settings_tab_labels() -> [(SettingsTab, &'static str); 4] {
+fn settings_tab_labels() -> [(SettingsTab, &'static str); 5] {
     [
         (SettingsTab::Automation, "Automation"),
         (SettingsTab::Standard, "Standard"),
         (SettingsTab::Performance, "High Performance"),
         (SettingsTab::LowPower, "Low Power"),
+        (SettingsTab::Energy, "Energy"),
     ]
 }
 
@@ -613,6 +671,138 @@ fn render_automation_section(ui: &mut Ui, config: &mut Config, changed: &mut boo
     );
 }
 
+fn render_energy_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
+    design::section(
+        ui,
+        "Energy Estimates",
+        "Configure estimated CPU power and estimated cost calculations.",
+        |ui| {
+            render_energy_reference_links(ui);
+            ui.add_space(design::spacing::SECTION_GAP);
+            settings_grid(ui, |ui| {
+                toggle_cell(
+                    ui,
+                    "Estimated CPU Power",
+                    "Show modeled CPU watts, cost, and savings on the dashboard.",
+                    &mut config.general.energy_estimates_enabled,
+                    changed,
+                );
+                float_value_cell(
+                    ui,
+                    "Electricity Rate",
+                    "Manual electricity price used for estimated CPU cost.",
+                    &mut config.general.energy_rate_dollars_per_kwh,
+                    0.0..=2.0,
+                    " $/kWh",
+                    0.001,
+                    changed,
+                );
+                ui.end_row();
+
+                text_value_cell(
+                    ui,
+                    "Rate Source",
+                    "Short label shown for the manual electricity rate.",
+                    &mut config.general.energy_rate_source_label,
+                    changed,
+                );
+                text_value_cell(
+                    ui,
+                    "CPU Profile Source",
+                    "Short label shown for the modeled CPU power profile.",
+                    &mut config.general.cpu_power_source_label,
+                    changed,
+                );
+                ui.end_row();
+            });
+
+            ui.add_space(design::spacing::SECTION_GAP);
+            design::subsection_heading(ui, "CPU Watt Profile");
+            ui.add_space(6.0);
+            settings_grid(ui, |ui| {
+                float_value_cell(
+                    ui,
+                    "Idle Watts",
+                    "Estimated CPU package watts when usage is quiet.",
+                    &mut config.general.cpu_idle_watts,
+                    0.0..=500.0,
+                    " W",
+                    0.5,
+                    changed,
+                );
+                float_value_cell(
+                    ui,
+                    "Base Watts",
+                    "Estimated CPU package watts near base frequency under load.",
+                    &mut config.general.cpu_base_watts,
+                    0.0..=500.0,
+                    " W",
+                    1.0,
+                    changed,
+                );
+                ui.end_row();
+
+                float_value_cell(
+                    ui,
+                    "Turbo Watts",
+                    "Estimated CPU package watts when running above base frequency.",
+                    &mut config.general.cpu_turbo_watts,
+                    0.0..=500.0,
+                    " W",
+                    1.0,
+                    changed,
+                );
+                empty_cell(ui);
+                ui.end_row();
+            });
+
+            if config.general.cpu_base_watts < config.general.cpu_idle_watts {
+                config.general.cpu_base_watts = config.general.cpu_idle_watts;
+                *changed = true;
+            }
+            if config.general.cpu_turbo_watts < config.general.cpu_base_watts {
+                config.general.cpu_turbo_watts = config.general.cpu_base_watts;
+                *changed = true;
+            }
+        },
+    );
+}
+
+fn render_energy_reference_links(ui: &mut Ui) {
+    egui::Frame::none()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .rounding(design::radius::CONTROL)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Reference data")
+                    .size(design::type_size::LABEL)
+                    .strong(),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("PowerPlanner uses manual estimates in v1. These sources can help set your electricity rate and CPU watt profile.")
+                    .weak()
+                    .size(design::type_size::HELP),
+            );
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Energy rates:").strong());
+                for (label, url) in ENERGY_RATE_LINKS {
+                    ui.hyperlink_to(label, url);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("CPU watt profile:").strong());
+                for (label, url) in CPU_PROFILE_LINKS {
+                    ui.hyperlink_to(label, url);
+                }
+            });
+        });
+}
+
 fn settings_grid(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     let column_width = ((ui.available_width() - 18.0) / 2.0).max(120.0);
     egui::Grid::new(ui.next_auto_id())
@@ -679,6 +869,50 @@ fn numeric_value_cell(
             .speed(1.0);
         let control_width = ui.available_width().min(SETTINGS_VALUE_WIDTH);
         if ui.add_sized([control_width, 30.0], numeric).changed() {
+            *changed = true;
+        }
+    });
+}
+
+fn float_value_cell(
+    ui: &mut Ui,
+    label: &str,
+    description: &str,
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+    speed: f64,
+    changed: &mut bool,
+) {
+    ui.vertical(|ui| {
+        design::setting_label(ui, label, description);
+        ui.add_space(6.0);
+        let numeric = egui::DragValue::new(value)
+            .range(range)
+            .suffix(suffix)
+            .speed(speed);
+        let control_width = ui.available_width().min(SETTINGS_VALUE_WIDTH);
+        if ui.add_sized([control_width, 30.0], numeric).changed() {
+            *changed = true;
+        }
+    });
+}
+
+fn text_value_cell(
+    ui: &mut Ui,
+    label: &str,
+    description: &str,
+    value: &mut String,
+    changed: &mut bool,
+) {
+    ui.vertical(|ui| {
+        design::setting_label(ui, label, description);
+        ui.add_space(6.0);
+        let control_width = ui.available_width().min(SETTINGS_COMBO_WIDTH);
+        if ui
+            .add_sized([control_width, 30.0], egui::TextEdit::singleline(value))
+            .changed()
+        {
             *changed = true;
         }
     });

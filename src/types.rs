@@ -171,9 +171,22 @@ impl CpuHistoryPlanKind {
 pub struct CpuHistoryPoint {
     pub ts: DateTime<Local>,
     pub average_percent: f32,
+    pub current_mhz: Option<u32>,
+    pub base_mhz: Option<u32>,
     pub plan_kind: CpuHistoryPlanKind,
     pub plan_name: String,
     pub trigger: String,
+    pub energy: Option<CpuHistoryEnergyEstimate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CpuHistoryEnergyEstimate {
+    pub estimated_watts: f64,
+    pub estimated_kwh: f64,
+    pub estimated_cost_usd: f64,
+    pub baseline_watts: f64,
+    pub baseline_cost_usd: f64,
+    pub estimated_savings_usd: f64,
 }
 
 #[derive(Debug)]
