@@ -42,7 +42,9 @@ mod tests {
         assert_eq!(design::type_size::SECTION_TITLE, 18.0);
         assert_eq!(design::type_size::LABEL, 14.0);
         assert_eq!(design::type_size::HELP, 12.5);
+        assert_eq!(design::type_size::NAV, 14.0);
         assert_eq!(design::spacing::SECTION_GAP, 12.0);
+        assert_eq!(design::spacing::NAV_ROW_HEIGHT, 40.0);
         assert_eq!(design::radius::SECTION, 8.0);
     }
 

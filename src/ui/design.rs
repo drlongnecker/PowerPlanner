@@ -1,4 +1,4 @@
-use egui::{self, Align, Color32, Layout, RichText, Stroke, Ui};
+use egui::{self, Align, Color32, Layout, RichText, Sense, Stroke, Ui};
 
 pub mod type_size {
     pub const PAGE_TITLE: f32 = 24.0;
@@ -6,6 +6,7 @@ pub mod type_size {
     pub const LABEL: f32 = 14.0;
     pub const HELP: f32 = 12.5;
     pub const STATUS: f32 = 13.0;
+    pub const NAV: f32 = 14.0;
 }
 
 pub mod spacing {
@@ -15,6 +16,8 @@ pub mod spacing {
     pub const SECTION_PAD_X: f32 = 16.0;
     pub const SECTION_PAD_Y: f32 = 14.0;
     pub const ROW_GAP: f32 = 10.0;
+    pub const NAV_ROW_HEIGHT: f32 = 40.0;
+    pub const NAV_ICON: f32 = 18.0;
 }
 
 pub mod radius {
@@ -45,6 +48,14 @@ pub enum StatusKind {
     Success,
     Muted,
     Warning,
+}
+
+#[derive(Clone, Copy)]
+pub enum NavIcon {
+    Dashboard,
+    Apps,
+    Settings,
+    History,
 }
 
 pub fn enabled_status_text(enabled: bool) -> &'static str {
@@ -183,6 +194,58 @@ pub fn tabs<T: Copy + PartialEq>(ui: &mut Ui, selected: &mut T, labels: &[(T, &s
     });
 }
 
+pub fn nav_item(ui: &mut Ui, label: &str, icon: NavIcon, selected: bool) -> egui::Response {
+    let desired = egui::vec2(ui.available_width(), spacing::NAV_ROW_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
+    let visuals = ui.visuals();
+
+    let fill = if selected {
+        color::ACCENT
+    } else if response.hovered() {
+        visuals.faint_bg_color
+    } else {
+        visuals.panel_fill
+    };
+    let stroke = if selected {
+        Stroke::new(1.0, color::ACCENT)
+    } else if response.hovered() {
+        visuals.widgets.hovered.bg_stroke
+    } else {
+        Stroke::NONE
+    };
+    ui.painter().rect(rect, radius::CONTROL, fill, stroke);
+
+    let content_color = if selected {
+        Color32::WHITE
+    } else {
+        visuals.text_color()
+    };
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.left() + 12.0,
+            rect.center().y - spacing::NAV_ICON / 2.0,
+        ),
+        egui::vec2(spacing::NAV_ICON, spacing::NAV_ICON),
+    );
+    draw_nav_icon(ui.painter(), icon_rect, icon, content_color);
+
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(type_size::NAV),
+        content_color,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            icon_rect.right() + 10.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        content_color,
+    );
+
+    response
+}
+
 pub fn enabled_badge_button(ui: &mut Ui, enabled: bool) -> egui::Response {
     let text = enabled_status_text(enabled);
     let accent = if enabled {
@@ -270,4 +333,79 @@ fn draw_checkmark(ui: &Ui, center: egui::Pos2) {
         ],
         check_stroke,
     );
+}
+
+fn draw_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    match icon {
+        NavIcon::Dashboard => {
+            let gap = 2.0;
+            let tile = (rect.width() - gap) / 2.0;
+            for row in 0..2 {
+                for col in 0..2 {
+                    let min =
+                        rect.min + egui::vec2(col as f32 * (tile + gap), row as f32 * (tile + gap));
+                    painter.rect_stroke(
+                        egui::Rect::from_min_size(min, egui::vec2(tile, tile)),
+                        2.0,
+                        stroke,
+                    );
+                }
+            }
+        }
+        NavIcon::Apps => {
+            let body = egui::Rect::from_min_size(
+                rect.min + egui::vec2(2.0, 5.0),
+                egui::vec2(rect.width() - 4.0, rect.height() - 7.0),
+            );
+            painter.rect_stroke(body, 2.0, stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(body.left() + 4.0, body.top()),
+                    egui::pos2(body.left() + 6.0, rect.top() + 2.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(body.right() - 4.0, body.top()),
+                    egui::pos2(body.right() - 6.0, rect.top() + 2.0),
+                ],
+                stroke,
+            );
+        }
+        NavIcon::Settings => {
+            painter.circle_stroke(rect.center(), 5.4, stroke);
+            painter.circle_stroke(rect.center(), 1.8, stroke);
+            for angle in [0.0_f32, 60.0, 120.0, 180.0, 240.0, 300.0] {
+                let radians = angle.to_radians();
+                let direction = egui::vec2(radians.cos(), radians.sin());
+                painter.line_segment(
+                    [
+                        rect.center() + direction * 7.0,
+                        rect.center() + direction * 8.8,
+                    ],
+                    stroke,
+                );
+            }
+        }
+        NavIcon::History => {
+            painter.circle_stroke(rect.center(), 7.0, stroke);
+            painter.line_segment(
+                [rect.center(), rect.center() + egui::vec2(0.0, -4.2)],
+                stroke,
+            );
+            painter.line_segment(
+                [rect.center(), rect.center() + egui::vec2(4.0, 2.6)],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.left_top() + egui::vec2(1.5, 5.8),
+                    rect.left_top() + egui::vec2(4.7, 3.4),
+                ],
+                stroke,
+            );
+        }
+    }
 }

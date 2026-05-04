@@ -105,10 +105,47 @@ impl eframe::App for PowerPlannerApp {
         egui::SidePanel::left("nav").show(ctx, |ui| {
             ui.heading("PowerPlanner");
             ui.separator();
-            ui.selectable_value(&mut self.nav, Nav::Dashboard, "Dashboard");
-            ui.selectable_value(&mut self.nav, Nav::WatchedApps, "Watched Apps");
-            ui.selectable_value(&mut self.nav, Nav::Settings, "Settings");
-            ui.selectable_value(&mut self.nav, Nav::History, "Recent Events");
+            ui.add_space(4.0);
+            if design::nav_item(
+                ui,
+                "Dashboard",
+                design::NavIcon::Dashboard,
+                self.nav == Nav::Dashboard,
+            )
+            .clicked()
+            {
+                self.nav = Nav::Dashboard;
+            }
+            if design::nav_item(
+                ui,
+                "Watched Apps",
+                design::NavIcon::Apps,
+                self.nav == Nav::WatchedApps,
+            )
+            .clicked()
+            {
+                self.nav = Nav::WatchedApps;
+            }
+            if design::nav_item(
+                ui,
+                "Settings",
+                design::NavIcon::Settings,
+                self.nav == Nav::Settings,
+            )
+            .clicked()
+            {
+                self.nav = Nav::Settings;
+            }
+            if design::nav_item(
+                ui,
+                "Recent Events",
+                design::NavIcon::History,
+                self.nav == Nav::History,
+            )
+            .clicked()
+            {
+                self.nav = Nav::History;
+            }
 
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 ui.add_space(8.0);
