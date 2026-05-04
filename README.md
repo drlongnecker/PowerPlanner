@@ -1,5 +1,7 @@
 # PowerPlanner
 
+![PowerPlanner](static/dashboard.png)
+
 ## What Is It
 
 A bit of unnecessary microtuning, probably.  It originated out of a PowerShell script I created when I noticed my CPU was always in turbo mode.  Notepad does not need 5.0GHz+ nor does the room require that much heat during the summer.
