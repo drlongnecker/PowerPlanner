@@ -48,6 +48,12 @@ mod tests {
         assert!((summary.estimated_savings_usd - 0.00025).abs() < 0.0000001);
     }
 
+    #[test]
+    fn format_money_uses_dollars_for_sub_cent_values() {
+        assert_eq!(format_money(0.000625), "$0.001");
+        assert_eq!(format_money(0.0125), "$0.013");
+    }
+
     fn point(
         ts: chrono::DateTime<Local>,
         average_percent: f32,
@@ -622,11 +628,7 @@ fn nice_watt_ceiling(watts: f64) -> f64 {
 }
 
 fn format_money(value: f64) -> String {
-    if value.abs() < 0.01 {
-        format!("{:.3} cents", value * 100.0)
-    } else {
-        format!("${:.2}", value)
-    }
+    format!("${:.3}", value)
 }
 
 fn format_speed_pair(point: &CpuHistoryPoint) -> String {
