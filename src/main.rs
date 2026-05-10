@@ -105,7 +105,13 @@ fn main() {
     }
 
     // Step 10: Build tray
-    let tray = tray::Tray::new().ok();
+    let tray = match tray::Tray::new() {
+        Ok(tray) => Some(tray),
+        Err(err) => {
+            log::warn!("Tray icon unavailable: {err:#}");
+            None
+        }
+    };
 
     // Step 11: Run egui
     const LOGO_PNG: &[u8] = include_bytes!("../planner.png");

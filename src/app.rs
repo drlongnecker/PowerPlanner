@@ -70,8 +70,22 @@ impl eframe::App for PowerPlannerApp {
             self.waker_started = true;
         }
 
-        if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        let (minimized, close_requested) = ctx.input(|i| {
+            let viewport = i.viewport();
+            (
+                viewport.minimized.unwrap_or(false),
+                viewport.close_requested(),
+            )
+        });
+        match window_lifecycle_action(self.tray.is_some(), minimized, close_requested) {
+            WindowLifecycleAction::None => {}
+            WindowLifecycleAction::Hide => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+            WindowLifecycleAction::CancelCloseAndHide => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
         }
 
         if self.bg_texture.is_none() {
@@ -439,6 +453,63 @@ mod tests {
         let tint = watermark_tint(eframe::Theme::Light);
         assert!(tint.a() > 120);
         assert!(tint.r() < 200);
+    }
+
+    #[test]
+    fn minimized_without_tray_keeps_window_available() {
+        assert_eq!(
+            window_lifecycle_action(false, true, false),
+            WindowLifecycleAction::None
+        );
+    }
+
+    #[test]
+    fn minimized_with_tray_hides_to_tray() {
+        assert_eq!(
+            window_lifecycle_action(true, true, false),
+            WindowLifecycleAction::Hide
+        );
+    }
+
+    #[test]
+    fn close_with_tray_cancels_close_and_hides() {
+        assert_eq!(
+            window_lifecycle_action(true, false, true),
+            WindowLifecycleAction::CancelCloseAndHide
+        );
+    }
+
+    #[test]
+    fn close_without_tray_allows_exit() {
+        assert_eq!(
+            window_lifecycle_action(false, false, true),
+            WindowLifecycleAction::None
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowLifecycleAction {
+    None,
+    Hide,
+    CancelCloseAndHide,
+}
+
+fn window_lifecycle_action(
+    has_tray: bool,
+    minimized: bool,
+    close_requested: bool,
+) -> WindowLifecycleAction {
+    if !has_tray {
+        return WindowLifecycleAction::None;
+    }
+
+    if close_requested {
+        WindowLifecycleAction::CancelCloseAndHide
+    } else if minimized {
+        WindowLifecycleAction::Hide
+    } else {
+        WindowLifecycleAction::None
     }
 }
 
