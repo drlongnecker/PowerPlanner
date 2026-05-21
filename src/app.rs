@@ -20,6 +20,7 @@ pub struct PowerPlannerApp {
     last_nav: Nav,
     last_applied_appearance: Option<AppearanceMode>,
     last_system_theme: Option<eframe::Theme>,
+    show_close_confirmation: bool,
 }
 
 impl PowerPlannerApp {
@@ -41,6 +42,7 @@ impl PowerPlannerApp {
             last_nav: Nav::default(),
             last_applied_appearance: None,
             last_system_theme: None,
+            show_close_confirmation: false,
         }
     }
 }
@@ -82,9 +84,9 @@ impl eframe::App for PowerPlannerApp {
             WindowLifecycleAction::Hide => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
-            WindowLifecycleAction::CancelCloseAndHide => {
+            WindowLifecycleAction::CancelCloseAndPrompt => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.show_close_confirmation = true;
             }
         }
 
@@ -225,6 +227,25 @@ impl eframe::App for PowerPlannerApp {
                 }
             }
         });
+
+        if self.show_close_confirmation {
+            if let Some(choice) = show_close_confirmation_dialog(ctx, self.tray.is_some()) {
+                match close_dialog_action(choice, self.tray.is_some()) {
+                    CloseDialogAction::Dismiss => {
+                        self.show_close_confirmation = false;
+                    }
+                    CloseDialogAction::DismissAndHide => {
+                        self.show_close_confirmation = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    }
+                    CloseDialogAction::Exit => {
+                        let _ = self.cmd_tx.send(MonitorCommand::Stop);
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -472,19 +493,87 @@ mod tests {
     }
 
     #[test]
-    fn close_with_tray_cancels_close_and_hides() {
+    fn close_with_tray_cancels_close_and_prompts() {
         assert_eq!(
             window_lifecycle_action(true, false, true),
-            WindowLifecycleAction::CancelCloseAndHide
+            WindowLifecycleAction::CancelCloseAndPrompt
         );
     }
 
     #[test]
-    fn close_without_tray_allows_exit() {
+    fn close_without_tray_cancels_close_and_prompts() {
         assert_eq!(
             window_lifecycle_action(false, false, true),
-            WindowLifecycleAction::None
+            WindowLifecycleAction::CancelCloseAndPrompt
         );
+    }
+
+    #[test]
+    fn close_dialog_cancel_keeps_window_open() {
+        assert_eq!(
+            close_dialog_action(CloseDialogChoice::Cancel, true),
+            CloseDialogAction::Dismiss
+        );
+    }
+
+    #[test]
+    fn close_dialog_close_exits_app() {
+        assert_eq!(
+            close_dialog_action(CloseDialogChoice::Close, true),
+            CloseDialogAction::Exit
+        );
+    }
+
+    #[test]
+    fn close_dialog_minimize_to_tray_hides_when_tray_exists() {
+        assert_eq!(
+            close_dialog_action(CloseDialogChoice::MinimizeToTray, true),
+            CloseDialogAction::DismissAndHide
+        );
+    }
+
+    #[test]
+    fn close_dialog_minimize_to_tray_is_unavailable_without_tray() {
+        assert_eq!(
+            close_dialog_action(CloseDialogChoice::MinimizeToTray, false),
+            CloseDialogAction::Dismiss
+        );
+    }
+
+    #[test]
+    fn close_dialog_enter_uses_default_minimize_to_tray() {
+        assert_eq!(
+            close_dialog_keyboard_choice(true, false, true),
+            Some(CloseDialogChoice::MinimizeToTray)
+        );
+    }
+
+    #[test]
+    fn close_dialog_enter_does_nothing_when_tray_is_unavailable() {
+        assert_eq!(close_dialog_keyboard_choice(true, false, false), None);
+    }
+
+    #[test]
+    fn close_dialog_escape_cancels() {
+        assert_eq!(
+            close_dialog_keyboard_choice(false, true, true),
+            Some(CloseDialogChoice::Cancel)
+        );
+    }
+
+    #[test]
+    fn close_dialog_layout_is_compact() {
+        let layout = close_dialog_layout();
+        assert_eq!(layout.size, egui::vec2(448.0, 196.0));
+        assert_eq!(layout.action_height, 64.0);
+    }
+
+    #[test]
+    fn close_dialog_layout_has_room_for_action_buttons() {
+        let layout = close_dialog_layout();
+        let button_width = 128.0;
+        let button_gap = 8.0;
+        assert!(layout.size.x >= button_width * 3.0 + button_gap * 2.0 + 32.0);
     }
 }
 
@@ -492,7 +581,27 @@ mod tests {
 enum WindowLifecycleAction {
     None,
     Hide,
-    CancelCloseAndHide,
+    CancelCloseAndPrompt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseDialogChoice {
+    Cancel,
+    Close,
+    MinimizeToTray,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseDialogAction {
+    Dismiss,
+    DismissAndHide,
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CloseDialogLayout {
+    size: egui::Vec2,
+    action_height: f32,
 }
 
 fn window_lifecycle_action(
@@ -500,16 +609,190 @@ fn window_lifecycle_action(
     minimized: bool,
     close_requested: bool,
 ) -> WindowLifecycleAction {
-    if !has_tray {
-        return WindowLifecycleAction::None;
-    }
-
     if close_requested {
-        WindowLifecycleAction::CancelCloseAndHide
+        WindowLifecycleAction::CancelCloseAndPrompt
     } else if minimized {
-        WindowLifecycleAction::Hide
+        if has_tray {
+            WindowLifecycleAction::Hide
+        } else {
+            WindowLifecycleAction::None
+        }
     } else {
         WindowLifecycleAction::None
+    }
+}
+
+fn close_dialog_action(choice: CloseDialogChoice, has_tray: bool) -> CloseDialogAction {
+    match choice {
+        CloseDialogChoice::Cancel => CloseDialogAction::Dismiss,
+        CloseDialogChoice::Close => CloseDialogAction::Exit,
+        CloseDialogChoice::MinimizeToTray if has_tray => CloseDialogAction::DismissAndHide,
+        CloseDialogChoice::MinimizeToTray => CloseDialogAction::Dismiss,
+    }
+}
+
+fn show_close_confirmation_dialog(
+    ctx: &egui::Context,
+    has_tray: bool,
+) -> Option<CloseDialogChoice> {
+    let (enter_pressed, escape_pressed) = ctx.input(|i| {
+        (
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+    let mut choice = close_dialog_keyboard_choice(enter_pressed, escape_pressed, has_tray);
+    let layout = close_dialog_layout();
+
+    egui::Area::new("close_confirmation_scrim".into())
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::Pos2::ZERO)
+        .interactable(false)
+        .show(ctx, |ui| {
+            let screen_rect = ctx.screen_rect();
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(18, 24, 33, 96),
+            );
+        });
+
+    egui::Area::new("close_confirmation_dialog".into())
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(ui.visuals().window_fill())
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.noninteractive.bg_stroke.color,
+                ))
+                .rounding(8.0)
+                .shadow(egui::epaint::Shadow {
+                    offset: egui::vec2(0.0, 18.0),
+                    blur: 32.0,
+                    spread: 0.0,
+                    color: egui::Color32::from_black_alpha(56),
+                })
+                .show(ui, |ui| {
+                    ui.set_min_size(layout.size);
+                    ui.set_max_size(layout.size);
+
+                    ui.vertical(|ui| {
+                        ui.add_space(18.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            ui.vertical(|ui| {
+                                ui.set_width(layout.size.x - 44.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Are you sure you want to close PowerPlanner?",
+                                    )
+                                    .size(20.0)
+                                    .strong(),
+                                );
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Doing so will disable the ability to monitor power usage and elevate tasks.",
+                                    )
+                                    .size(design::type_size::LABEL),
+                                );
+                            });
+                        });
+
+                        ui.add_space(24.0);
+
+                        egui::Frame::none()
+                            .fill(ui.visuals().faint_bg_color)
+                            .inner_margin(egui::Margin::symmetric(16.0, 14.0))
+                            .show(ui, |ui| {
+                                ui.set_width(layout.size.x);
+                                ui.set_height(layout.action_height);
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if close_dialog_button(
+                                            ui,
+                                            "Minimize to Tray",
+                                            true,
+                                            has_tray,
+                                        )
+                                        .on_disabled_hover_text("Tray is unavailable.")
+                                        .clicked()
+                                        {
+                                            choice = Some(CloseDialogChoice::MinimizeToTray);
+                                        }
+
+                                        ui.add_space(8.0);
+
+                                        if close_dialog_button(ui, "Close", false, true).clicked() {
+                                            choice = Some(CloseDialogChoice::Close);
+                                        }
+
+                                        ui.add_space(8.0);
+
+                                        if close_dialog_button(ui, "Cancel", false, true).clicked()
+                                        {
+                                            choice = Some(CloseDialogChoice::Cancel);
+                                        }
+                                    },
+                                );
+                            });
+                    });
+                });
+        });
+
+    choice
+}
+
+fn close_dialog_layout() -> CloseDialogLayout {
+    CloseDialogLayout {
+        size: egui::vec2(448.0, 196.0),
+        action_height: 64.0,
+    }
+}
+
+fn close_dialog_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    default: bool,
+    enabled: bool,
+) -> egui::Response {
+    let text = if default {
+        egui::RichText::new(label)
+            .size(design::type_size::STATUS)
+            .strong()
+            .color(egui::Color32::WHITE)
+    } else {
+        egui::RichText::new(label).size(design::type_size::STATUS)
+    };
+
+    let mut button = egui::Button::new(text).rounding(4.0);
+    if default {
+        button = button
+            .fill(ui.visuals().selection.bg_fill)
+            .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color));
+    } else {
+        button = button.fill(ui.visuals().widgets.inactive.bg_fill);
+    }
+
+    ui.add_enabled_ui(enabled, |ui| ui.add_sized([128.0, 32.0], button))
+        .inner
+}
+
+fn close_dialog_keyboard_choice(
+    enter_pressed: bool,
+    escape_pressed: bool,
+    has_tray: bool,
+) -> Option<CloseDialogChoice> {
+    if escape_pressed {
+        Some(CloseDialogChoice::Cancel)
+    } else if enter_pressed && has_tray {
+        Some(CloseDialogChoice::MinimizeToTray)
+    } else {
+        None
     }
 }
 
