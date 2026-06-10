@@ -105,7 +105,7 @@ fn main() {
     }
 
     // Step 10: Build tray
-    let tray = match tray::Tray::new() {
+    let tray = match tray::Tray::new_with_startup_retry() {
         Ok(tray) => Some(tray),
         Err(err) => {
             log::warn!("Tray icon unavailable: {err:#}");

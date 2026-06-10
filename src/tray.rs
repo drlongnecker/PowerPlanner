@@ -1,11 +1,14 @@
 // src/tray.rs
 use anyhow::Result;
+use std::time::Duration;
 use tray_icon::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
 };
 
 const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
+const STARTUP_TRAY_ATTEMPTS: usize = 15;
+const STARTUP_TRAY_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub struct Tray {
     pub show_item_id: tray_icon::menu::MenuId,
@@ -17,6 +20,15 @@ pub struct Tray {
 }
 
 impl Tray {
+    pub fn new_with_startup_retry() -> Result<Self> {
+        retry_with_delay(
+            STARTUP_TRAY_ATTEMPTS,
+            STARTUP_TRAY_RETRY_DELAY,
+            Self::new,
+            std::thread::sleep,
+        )
+    }
+
     pub fn new() -> Result<Self> {
         let show = MenuItem::new("Show Window", true, None);
         let balanced = MenuItem::new("Force Balanced", true, None);
@@ -57,6 +69,24 @@ impl Tray {
     }
 }
 
+fn retry_with_delay<T, E>(
+    max_attempts: usize,
+    delay: Duration,
+    mut operation: impl FnMut() -> std::result::Result<T, E>,
+    mut sleep: impl FnMut(Duration),
+) -> std::result::Result<T, E> {
+    assert!(max_attempts > 0);
+
+    for _ in 1..max_attempts {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(_) => sleep(delay),
+        }
+    }
+
+    operation()
+}
+
 fn load_icon() -> tray_icon::Icon {
     if let Ok(img) = image::load_from_memory(LOGO_PNG) {
         let img = img.resize(32, 32, image::imageops::FilterType::Lanczos3);
@@ -71,4 +101,74 @@ fn load_icon() -> tray_icon::Icon {
         .flat_map(|_| [120u8, 120u8, 120u8, 255u8])
         .collect();
     tray_icon::Icon::from_rgba(rgba, 32, 32).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn tray_startup_retry_returns_immediately_on_success() {
+        let attempts = Cell::new(0);
+        let sleeps = Cell::new(0);
+
+        let result = retry_with_delay(
+            3,
+            Duration::from_secs(1),
+            || {
+                attempts.set(attempts.get() + 1);
+                Ok::<_, &'static str>("tray")
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert_eq!(result, Ok("tray"));
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(sleeps.get(), 0);
+    }
+
+    #[test]
+    fn tray_startup_retry_recovers_from_transient_failures() {
+        let attempts = Cell::new(0);
+        let sleeps = Cell::new(0);
+
+        let result = retry_with_delay(
+            4,
+            Duration::from_secs(1),
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() < 3 {
+                    Err("shell unavailable")
+                } else {
+                    Ok("tray")
+                }
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert_eq!(result, Ok("tray"));
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(sleeps.get(), 2);
+    }
+
+    #[test]
+    fn tray_startup_retry_returns_the_final_error() {
+        let attempts = Cell::new(0);
+        let sleeps = Cell::new(0);
+
+        let result = retry_with_delay(
+            3,
+            Duration::from_secs(1),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err::<(), _>(attempts.get())
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert_eq!(result, Err(3));
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(sleeps.get(), 2);
+    }
 }
