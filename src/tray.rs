@@ -20,13 +20,14 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn new_with_startup_retry() -> Result<Self> {
-        retry_with_delay(
+    pub fn new_after_startup_wait() -> Result<Self> {
+        wait_with_delay(
             STARTUP_TRAY_ATTEMPTS,
             STARTUP_TRAY_RETRY_DELAY,
-            Self::new,
+            notification_area_ready,
             std::thread::sleep,
-        )
+        );
+        Self::new()
     }
 
     pub fn new() -> Result<Self> {
@@ -69,22 +70,51 @@ impl Tray {
     }
 }
 
-fn retry_with_delay<T, E>(
+fn wait_with_delay(
     max_attempts: usize,
     delay: Duration,
-    mut operation: impl FnMut() -> std::result::Result<T, E>,
+    mut ready: impl FnMut() -> bool,
     mut sleep: impl FnMut(Duration),
-) -> std::result::Result<T, E> {
+) -> bool {
     assert!(max_attempts > 0);
 
     for _ in 1..max_attempts {
-        match operation() {
-            Ok(value) => return Ok(value),
-            Err(_) => sleep(delay),
+        if ready() {
+            return true;
         }
+        sleep(delay);
     }
 
-    operation()
+    ready()
+}
+
+#[cfg(windows)]
+fn notification_area_ready() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW};
+
+    let taskbar_class: Vec<u16> = "Shell_TrayWnd\0".encode_utf16().collect();
+    let notification_area_class: Vec<u16> = "TrayNotifyWnd\0".encode_utf16().collect();
+
+    unsafe {
+        let Ok(taskbar) = FindWindowW(PCWSTR(taskbar_class.as_ptr()), PCWSTR::null()) else {
+            return false;
+        };
+
+        FindWindowExW(
+            taskbar,
+            HWND::default(),
+            PCWSTR(notification_area_class.as_ptr()),
+            PCWSTR::null(),
+        )
+        .is_ok()
+    }
+}
+
+#[cfg(not(windows))]
+fn notification_area_ready() -> bool {
+    true
 }
 
 fn load_icon() -> tray_icon::Icon {
@@ -109,65 +139,61 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
-    fn tray_startup_retry_returns_immediately_on_success() {
+    fn tray_startup_wait_returns_immediately_when_ready() {
         let attempts = Cell::new(0);
         let sleeps = Cell::new(0);
 
-        let result = retry_with_delay(
+        let ready = wait_with_delay(
             3,
             Duration::from_secs(1),
             || {
                 attempts.set(attempts.get() + 1);
-                Ok::<_, &'static str>("tray")
+                true
             },
             |_| sleeps.set(sleeps.get() + 1),
         );
 
-        assert_eq!(result, Ok("tray"));
+        assert!(ready);
         assert_eq!(attempts.get(), 1);
         assert_eq!(sleeps.get(), 0);
     }
 
     #[test]
-    fn tray_startup_retry_recovers_from_transient_failures() {
+    fn tray_startup_wait_recovers_when_notification_area_appears() {
         let attempts = Cell::new(0);
         let sleeps = Cell::new(0);
 
-        let result = retry_with_delay(
+        let ready = wait_with_delay(
             4,
             Duration::from_secs(1),
             || {
                 attempts.set(attempts.get() + 1);
-                if attempts.get() < 3 {
-                    Err("shell unavailable")
-                } else {
-                    Ok("tray")
-                }
+                attempts.get() >= 3
             },
             |_| sleeps.set(sleeps.get() + 1),
         );
 
-        assert_eq!(result, Ok("tray"));
+        assert!(ready);
         assert_eq!(attempts.get(), 3);
         assert_eq!(sleeps.get(), 2);
     }
 
     #[test]
-    fn tray_startup_retry_returns_the_final_error() {
+    fn tray_startup_wait_stops_after_the_final_check() {
         let attempts = Cell::new(0);
         let sleeps = Cell::new(0);
 
-        let result = retry_with_delay(
+        let ready = wait_with_delay(
             3,
             Duration::from_secs(1),
             || {
                 attempts.set(attempts.get() + 1);
-                Err::<(), _>(attempts.get())
+                false
             },
             |_| sleeps.set(sleeps.get() + 1),
         );
 
-        assert_eq!(result, Err(3));
+        assert!(!ready);
         assert_eq!(attempts.get(), 3);
         assert_eq!(sleeps.get(), 2);
     }
