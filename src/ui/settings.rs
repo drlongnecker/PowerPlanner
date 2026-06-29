@@ -1,8 +1,7 @@
 use crate::config::Config;
 use crate::types::{
-    AppState, HighPerformanceDiagnostics, HighPerformanceRecommendation, MonitorCommand,
-    PlanDiagnostics, PlanProcessorRecommendation, PlanProcessorSettings, PowerPlan,
-    UltimatePerformanceSetupState,
+    AppState, CpuInfo, CpuTopologyKind, MonitorCommand, PlanProcessorSettings, PowerPlan,
+    ProcessorPresetDiagnostics, ProcessorPresetRecommendation, UltimatePerformanceSetupState,
 };
 use crate::ui::design;
 use egui::{self, Align, RichText, Ui};
@@ -57,6 +56,92 @@ enum SettingsTab {
     Energy,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessorPresetKind {
+    Standard,
+    LowPower,
+    Performance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TopologySummary {
+    kind: CpuTopologyKind,
+    processor: String,
+    detail: String,
+}
+
+fn topology_summary(cpu: Option<&CpuInfo>) -> TopologySummary {
+    let Some(cpu) = cpu else {
+        return TopologySummary {
+            kind: CpuTopologyKind::Unknown,
+            processor: "this processor".to_string(),
+            detail: "Processor topology is unavailable. Class-specific Windows/OEM settings will be preserved."
+                .to_string(),
+        };
+    };
+    let processor = if cpu.brand.trim().is_empty() {
+        "this processor".to_string()
+    } else {
+        cpu.brand.trim().to_string()
+    };
+    let kind = cpu.topology_kind();
+    let detail = match kind {
+        CpuTopologyKind::Homogeneous => {
+            let count = cpu
+                .efficiency_classes
+                .first()
+                .map(|class| class.logical_processors)
+                .or(cpu.logical_processors)
+                .unwrap_or_default();
+            format!("Single processor class detected ({count} logical processors).")
+        }
+        CpuTopologyKind::Hybrid => {
+            let mut classes = cpu.efficiency_classes.clone();
+            classes.sort_by_key(|class| class.value);
+            format!(
+                "Hybrid processor detected: {} efficient-class and {} faster-class logical processors. This preset configures both classes.",
+                classes[0].logical_processors, classes[1].logical_processors
+            )
+        }
+        CpuTopologyKind::Unknown => {
+            "Processor topology could not be classified. Class-specific Windows/OEM settings will be preserved."
+                .to_string()
+        }
+    };
+    TopologySummary {
+        kind,
+        processor,
+        detail,
+    }
+}
+
+fn preset_label(
+    kind: ProcessorPresetKind,
+    recommendation: ProcessorPresetRecommendation,
+) -> &'static str {
+    match kind {
+        ProcessorPresetKind::Standard
+            if recommendation.min_percent == 5
+                && recommendation.max_percent == 99
+                && recommendation.boost_mode == Some(0)
+                && recommendation.core_parking_min_cores_percent.is_none() =>
+        {
+            "Efficiency preset"
+        }
+        ProcessorPresetKind::Standard
+            if recommendation.min_percent == 5
+                && recommendation.max_percent == 100
+                && recommendation.boost_mode == Some(3)
+                && recommendation.core_parking_min_cores_percent.is_none() =>
+        {
+            "Responsive preset"
+        }
+        ProcessorPresetKind::Standard => "Custom preset",
+        ProcessorPresetKind::LowPower => "Maximum efficiency preset",
+        ProcessorPresetKind::Performance => "Maximum responsiveness preset",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +193,54 @@ mod tests {
         assert!(has_ultimate_performance(&plans));
         assert!(!has_ultimate_performance(&plans[..1]));
     }
+
+    #[test]
+    fn topology_summary_copies_hybrid_class_counts() {
+        let cpu = CpuInfo {
+            brand: "Example Hybrid CPU".into(),
+            logical_processors: Some(12),
+            efficiency_classes: vec![
+                crate::types::CpuEfficiencyClass {
+                    value: 8,
+                    logical_processors: 4,
+                },
+                crate::types::CpuEfficiencyClass {
+                    value: 0,
+                    logical_processors: 8,
+                },
+            ],
+            ..CpuInfo::default()
+        };
+
+        let summary = topology_summary(Some(&cpu));
+
+        assert_eq!(summary.kind, CpuTopologyKind::Hybrid);
+        assert_eq!(summary.processor, "Example Hybrid CPU");
+        assert!(summary.detail.contains("8 efficient-class"));
+        assert!(summary.detail.contains("4 faster-class"));
+    }
+
+    #[test]
+    fn standard_preset_labels_distinguish_efficiency_and_responsive() {
+        let mut config = Config::default();
+        let efficiency = config
+            .general
+            .standard_processor_preset(CpuTopologyKind::Homogeneous);
+        assert_eq!(
+            preset_label(ProcessorPresetKind::Standard, efficiency),
+            "Efficiency preset"
+        );
+
+        config.general.standard_cpu_max_percent = 100;
+        config.general.standard_boost_mode = 3;
+        let responsive = config
+            .general
+            .standard_processor_preset(CpuTopologyKind::Homogeneous);
+        assert_eq!(
+            preset_label(ProcessorPresetKind::Standard, responsive),
+            "Responsive preset"
+        );
+    }
 }
 
 pub fn render(
@@ -117,6 +250,11 @@ pub fn render(
     state: &AppState,
 ) {
     let mut changed = false;
+    let topology = state
+        .cpu_info
+        .as_ref()
+        .map(CpuInfo::topology_kind)
+        .unwrap_or(CpuTopologyKind::Unknown);
 
     if let UltimatePerformanceSetupState::Succeeded(plan) = &state.ultimate_performance_setup {
         if config.general.performance_plan_guid != plan.guid {
@@ -146,6 +284,10 @@ pub fn render(
             .show(ui, |ui| match selected_tab {
                 SettingsTab::Automation => render_automation_section(ui, config, &mut changed),
                 SettingsTab::Standard => {
+                    let mut cpu_min_percent = config.general.standard_cpu_min_percent;
+                    let mut cpu_max_percent = config.general.standard_cpu_max_percent;
+                    let mut boost_mode = config.general.standard_boost_mode;
+                    let mut parking = config.general.standard_core_parking_min_cores_percent;
                     let selected_guid = render_plan_tab(
                         ui,
                         state,
@@ -156,7 +298,9 @@ pub fn render(
                             plan_description: "Used when specialized plan rules are inactive.",
                             combo_id: "standard_plan_combo",
                             guid: config.general.standard_plan_guid.clone(),
-                            recommendation: config.general.standard_recommendation(),
+                            recommendation: config.general.standard_processor_preset(topology),
+                            kind: ProcessorPresetKind::Standard,
+                            rationale: "Efficiency prevents turbo while balanced; Responsive permits efficient boost. Both leave core parking under Windows/OEM control.",
                         },
                         &mut changed,
                         |ui, changed| {
@@ -183,21 +327,41 @@ pub fn render(
                             });
                         },
                         |ui, guid, settings, recommendation, changed| {
-                            processor_limit_controls(
+                            processor_preset_controls(
                                 ui,
                                 tx,
                                 guid,
                                 settings,
                                 recommendation,
-                                "Use 99% max to prevent Windows 11 turbo while balanced.",
-                                &mut config.general.standard_cpu_min_percent,
-                                &mut config.general.standard_cpu_max_percent,
+                                topology,
+                                ProcessorPresetKind::Standard,
+                                &mut cpu_min_percent,
+                                &mut cpu_max_percent,
+                                &mut boost_mode,
+                                &mut parking,
+                                true,
                                 changed,
                             );
                         },
                     );
                     if selected_guid != config.general.standard_plan_guid {
                         config.general.standard_plan_guid = selected_guid;
+                        changed = true;
+                    }
+                    if cpu_min_percent != config.general.standard_cpu_min_percent {
+                        config.general.standard_cpu_min_percent = cpu_min_percent;
+                        changed = true;
+                    }
+                    if cpu_max_percent != config.general.standard_cpu_max_percent {
+                        config.general.standard_cpu_max_percent = cpu_max_percent;
+                        changed = true;
+                    }
+                    if boost_mode != config.general.standard_boost_mode {
+                        config.general.standard_boost_mode = boost_mode;
+                        changed = true;
+                    }
+                    if parking != config.general.standard_core_parking_min_cores_percent {
+                        config.general.standard_core_parking_min_cores_percent = parking;
                         changed = true;
                     }
                 }
@@ -220,7 +384,8 @@ pub fn render(
                         state,
                         tx,
                         config.general.performance_plan_guid.clone(),
-                        config.general.high_performance_recommendation(),
+                        config.general.high_performance_recommendation(topology),
+                        topology,
                         &mut performance_cpu_min_percent,
                         &mut performance_cpu_max_percent,
                         &mut performance_boost_mode,
@@ -292,6 +457,10 @@ pub fn render(
                     }
                 }
                 SettingsTab::LowPower => {
+                    let mut cpu_min_percent = config.general.low_power_cpu_min_percent;
+                    let mut cpu_max_percent = config.general.low_power_cpu_max_percent;
+                    let mut boost_mode = config.general.low_power_boost_mode;
+                    let mut parking = config.general.low_power_core_parking_min_cores_percent;
                     let selected_guid = render_plan_tab(
                         ui,
                         state,
@@ -302,7 +471,9 @@ pub fn render(
                             plan_description: "Used when the machine is idle and CPU activity stays low.",
                             combo_id: "low_power_plan_combo",
                             guid: config.general.low_power_plan_guid.clone(),
-                            recommendation: config.general.low_power_recommendation(),
+                            recommendation: config.general.low_power_processor_preset(topology),
+                            kind: ProcessorPresetKind::LowPower,
+                            rationale: "The Maximum efficiency preset disables boost, caps processor state, and allows Windows to park idle cores aggressively.",
                         },
                         &mut changed,
                         |ui, changed| {
@@ -344,21 +515,41 @@ pub fn render(
                             });
                         },
                         |ui, guid, settings, recommendation, changed| {
-                            processor_limit_controls(
+                            processor_preset_controls(
                                 ui,
                                 tx,
                                 guid,
                                 settings,
                                 recommendation,
-                                "Cap max at 20% so idle low-power behavior stays visibly constrained.",
-                                &mut config.general.low_power_cpu_min_percent,
-                                &mut config.general.low_power_cpu_max_percent,
+                                topology,
+                                ProcessorPresetKind::LowPower,
+                                &mut cpu_min_percent,
+                                &mut cpu_max_percent,
+                                &mut boost_mode,
+                                &mut parking,
+                                true,
                                 changed,
                             );
                         },
                     );
                     if selected_guid != config.general.low_power_plan_guid {
                         config.general.low_power_plan_guid = selected_guid;
+                        changed = true;
+                    }
+                    if cpu_min_percent != config.general.low_power_cpu_min_percent {
+                        config.general.low_power_cpu_min_percent = cpu_min_percent;
+                        changed = true;
+                    }
+                    if cpu_max_percent != config.general.low_power_cpu_max_percent {
+                        config.general.low_power_cpu_max_percent = cpu_max_percent;
+                        changed = true;
+                    }
+                    if boost_mode != config.general.low_power_boost_mode {
+                        config.general.low_power_boost_mode = boost_mode;
+                        changed = true;
+                    }
+                    if parking != config.general.low_power_core_parking_min_cores_percent {
+                        config.general.low_power_core_parking_min_cores_percent = parking;
                         changed = true;
                     }
                 }
@@ -389,7 +580,9 @@ struct PlanTab {
     plan_description: &'static str,
     combo_id: &'static str,
     guid: String,
-    recommendation: PlanProcessorRecommendation,
+    recommendation: ProcessorPresetRecommendation,
+    kind: ProcessorPresetKind,
+    rationale: &'static str,
 }
 
 fn render_plan_tab(
@@ -402,7 +595,7 @@ fn render_plan_tab(
         &mut Ui,
         &str,
         Option<PlanProcessorSettings>,
-        PlanProcessorRecommendation,
+        ProcessorPresetRecommendation,
         &mut bool,
     ),
 ) -> String {
@@ -426,6 +619,13 @@ fn render_plan_tab(
         ui.add_space(design::spacing::SECTION_GAP);
         design::subsection_heading(ui, "Processor Limits");
         ui.add_space(6.0);
+        processor_recommendation_note(
+            ui,
+            state.cpu_info.as_ref(),
+            preset_label(plan.kind, plan.recommendation),
+            plan.rationale,
+        );
+        ui.add_space(design::spacing::ROW_GAP);
         let settings = state
             .plan_processor_settings
             .get(&plan.guid)
@@ -441,7 +641,8 @@ fn render_performance_plan_tab(
     state: &AppState,
     tx: &mpsc::Sender<MonitorCommand>,
     mut guid: String,
-    recommendation: HighPerformanceRecommendation,
+    recommendation: ProcessorPresetRecommendation,
+    topology: CpuTopologyKind,
     min_percent: &mut u8,
     max_percent: &mut u8,
     boost_mode: &mut u8,
@@ -474,22 +675,36 @@ fn render_performance_plan_tab(
             ui.add_space(design::spacing::SECTION_GAP);
             design::subsection_heading(ui, "Processor Performance");
             ui.add_space(6.0);
+            processor_recommendation_note(
+                ui,
+                state.cpu_info.as_ref(),
+                preset_label(ProcessorPresetKind::Performance, recommendation),
+                "The Maximum responsiveness preset keeps processor capacity available, uses aggressive boost, and disables core parking delays.",
+            );
+            ui.add_space(design::spacing::ROW_GAP);
             let settings = state
                 .plan_processor_settings
                 .get(&guid)
                 .and_then(|settings| *settings);
-            high_performance_controls(
+            let mut parking = Some(*core_parking_min_cores_percent);
+            processor_preset_controls(
                 ui,
                 tx,
                 &guid,
                 settings,
                 recommendation,
+                topology,
+                ProcessorPresetKind::Performance,
                 min_percent,
                 max_percent,
                 boost_mode,
-                core_parking_min_cores_percent,
+                &mut parking,
+                false,
                 changed,
             );
+            if let Some(value) = parking {
+                *core_parking_min_cores_percent = value;
+            }
         },
     );
     guid
@@ -501,11 +716,40 @@ fn has_ultimate_performance(plans: &[PowerPlan]) -> bool {
         .any(|plan| plan.name.eq_ignore_ascii_case("Ultimate Performance"))
 }
 
+fn processor_recommendation_note(
+    ui: &mut Ui,
+    cpu: Option<&CpuInfo>,
+    preset: &str,
+    rationale: &str,
+) {
+    let summary = topology_summary(cpu);
+    egui::Frame::none()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .rounding(design::radius::CONTROL)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(format!("{preset} recommended for {}", summary.processor))
+                    .size(design::type_size::LABEL)
+                    .strong(),
+            );
+            ui.add_space(3.0);
+            ui.label(
+                RichText::new(summary.detail)
+                    .weak()
+                    .size(design::type_size::HELP),
+            );
+            ui.add_space(3.0);
+            ui.label(RichText::new(rationale).size(design::type_size::HELP));
+        });
+}
+
 fn ultimate_performance_setup_controls(
     ui: &mut Ui,
     tx: &mpsc::Sender<MonitorCommand>,
     state: &AppState,
-    recommendation: HighPerformanceRecommendation,
+    recommendation: ProcessorPresetRecommendation,
 ) {
     let missing = !has_ultimate_performance(&state.available_plans);
     let show_result = !matches!(
@@ -588,91 +832,141 @@ fn ultimate_performance_setup_controls(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn high_performance_controls(
+fn processor_preset_controls(
     ui: &mut Ui,
     tx: &mpsc::Sender<MonitorCommand>,
     guid: &str,
     settings: Option<PlanProcessorSettings>,
-    recommendation: HighPerformanceRecommendation,
+    recommendation: ProcessorPresetRecommendation,
+    topology: CpuTopologyKind,
+    preset_kind: ProcessorPresetKind,
     min_percent: &mut u8,
     max_percent: &mut u8,
     boost_mode: &mut u8,
-    core_parking_min_cores_percent: &mut u8,
+    core_parking_min_cores_percent: &mut Option<u8>,
+    allow_oem_managed_parking: bool,
     changed: &mut bool,
 ) {
-    let diagnostic = HighPerformanceDiagnostics::for_settings(settings.as_ref(), recommendation);
+    let diagnostic = ProcessorPresetDiagnostics::for_settings(settings.as_ref(), recommendation);
     settings_grid(ui, |ui| {
-        high_performance_recommendation_controls(
+        preset_recommendation_controls(
             ui,
+            recommendation,
+            topology,
+            preset_kind,
             min_percent,
             max_percent,
             boost_mode,
             core_parking_min_cores_percent,
+            allow_oem_managed_parking,
             changed,
         );
-        high_performance_current_configuration(ui, tx, guid, settings, recommendation, diagnostic);
+        preset_current_configuration(ui, tx, guid, settings, recommendation, diagnostic, topology);
         ui.end_row();
     });
 }
 
-fn high_performance_recommendation_controls(
+#[allow(clippy::too_many_arguments)]
+fn preset_recommendation_controls(
     ui: &mut Ui,
+    recommendation: ProcessorPresetRecommendation,
+    topology: CpuTopologyKind,
+    preset_kind: ProcessorPresetKind,
     min_percent: &mut u8,
     max_percent: &mut u8,
     boost_mode: &mut u8,
-    core_parking_min_cores_percent: &mut u8,
+    core_parking_min_cores_percent: &mut Option<u8>,
+    allow_oem_managed_parking: bool,
     changed: &mut bool,
 ) {
     ui.vertical(|ui| {
         ui.label(
-            RichText::new(
-                "Keep processor capacity available, allow fast boost response, and prevent core parking from adding wake-up latency.",
-            )
+            RichText::new(preset_label(preset_kind, recommendation))
+                .size(design::type_size::LABEL)
+                .strong(),
+        );
+        ui.add_space(3.0);
+        let parking = recommendation
+            .core_parking_min_cores_percent
+            .map(|value| format!("{value}% minimum"))
+            .unwrap_or_else(|| "Windows/OEM managed".to_string());
+        ui.label(
+            RichText::new(format!(
+                "{}% min, {}% max, {} boost, {parking} core parking{}.",
+                recommendation.min_percent,
+                recommendation.max_percent,
+                recommendation
+                    .boost_mode
+                    .map(|value| boost_mode_name(value as u8))
+                    .unwrap_or("Windows/OEM managed"),
+                if topology == CpuTopologyKind::Hybrid {
+                    ", mirrored across both processor classes"
+                } else {
+                    ""
+                }
+            ))
             .weak()
             .size(design::type_size::HELP),
         );
-        ui.add_space(design::spacing::ROW_GAP);
 
-        let mut min = *min_percent as u64;
-        numeric_value_cell(
-            ui,
-            "Min Processor State",
-            "Recommended minimum processor state for plugged-in and battery power.",
-            &mut min,
-            0..=100,
-            "%",
-            changed,
-        );
-        ui.add_space(design::spacing::ROW_GAP);
-
-        let mut max = *max_percent as u64;
-        numeric_value_cell(
-            ui,
-            "Max Processor State",
-            "Recommended maximum processor state for plugged-in and battery power.",
-            &mut max,
-            0..=100,
-            "%",
-            changed,
-        );
-        *min_percent = min.min(max) as u8;
-        *max_percent = max.max(min) as u8;
+        if preset_kind == ProcessorPresetKind::Standard {
+            ui.add_space(8.0);
+            let efficiency = *min_percent == 5
+                && *max_percent == 99
+                && *boost_mode == 0
+                && core_parking_min_cores_percent.is_none();
+            let label = if efficiency {
+                "Use Responsive preset"
+            } else {
+                "Use Efficiency preset"
+            };
+            if ui.button(label).clicked() {
+                *min_percent = 5;
+                *max_percent = if efficiency { 100 } else { 99 };
+                *boost_mode = if efficiency { 3 } else { 0 };
+                *core_parking_min_cores_percent = None;
+                *changed = true;
+            }
+        }
 
         ui.add_space(design::spacing::ROW_GAP);
-        boost_mode_cell(ui, boost_mode, changed);
-        ui.add_space(design::spacing::ROW_GAP);
+        egui::CollapsingHeader::new("Advanced overrides")
+            .id_source("processor_preset_advanced")
+            .show(ui, |ui| {
+                let mut min = *min_percent as u64;
+                numeric_value_cell(
+                    ui,
+                    "Min Processor State",
+                    "Minimum processor state for plugged-in and battery power.",
+                    &mut min,
+                    0..=100,
+                    "%",
+                    changed,
+                );
+                ui.add_space(design::spacing::ROW_GAP);
+                let mut max = *max_percent as u64;
+                numeric_value_cell(
+                    ui,
+                    "Max Processor State",
+                    "Maximum processor state for plugged-in and battery power.",
+                    &mut max,
+                    0..=100,
+                    "%",
+                    changed,
+                );
+                *min_percent = min.min(max) as u8;
+                *max_percent = max.max(min) as u8;
 
-        let mut parking = *core_parking_min_cores_percent as u64;
-        numeric_value_cell(
-            ui,
-            "Core Parking Minimum",
-            "Minimum percentage of logical cores Windows keeps available.",
-            &mut parking,
-            0..=100,
-            "%",
-            changed,
-        );
-        *core_parking_min_cores_percent = parking as u8;
+                ui.add_space(design::spacing::ROW_GAP);
+                boost_mode_cell(ui, boost_mode, changed);
+                ui.add_space(design::spacing::ROW_GAP);
+                parking_override_cell(
+                    ui,
+                    core_parking_min_cores_percent,
+                    allow_oem_managed_parking,
+                    changed,
+                );
+            });
     });
 }
 
@@ -685,7 +979,7 @@ fn boost_mode_cell(ui: &mut Ui, boost_mode: &mut u8, changed: &mut bool) {
         );
         ui.add_space(6.0);
         let control_width = ui.available_width().min(SETTINGS_COMBO_WIDTH);
-        egui::ComboBox::from_id_source("performance_boost_mode_combo")
+        egui::ComboBox::from_id_source("processor_boost_mode_combo")
             .selected_text(boost_mode_name(*boost_mode))
             .width(control_width)
             .show_ui(ui, |ui| {
@@ -698,13 +992,53 @@ fn boost_mode_cell(ui: &mut Ui, boost_mode: &mut u8, changed: &mut bool) {
     });
 }
 
-fn high_performance_current_configuration(
+fn parking_override_cell(
+    ui: &mut Ui,
+    parking: &mut Option<u8>,
+    allow_oem_managed: bool,
+    changed: &mut bool,
+) {
+    ui.vertical(|ui| {
+        design::setting_label(
+            ui,
+            "Core Parking Minimum",
+            "Minimum percentage of logical cores Windows keeps available.",
+        );
+        if allow_oem_managed {
+            let mut managed = parking.is_none();
+            if ui
+                .checkbox(&mut managed, "Let Windows/OEM manage this setting")
+                .changed()
+            {
+                *parking = if managed { None } else { Some(0) };
+                *changed = true;
+            }
+        }
+        if let Some(value) = parking {
+            let mut numeric = u64::from(*value);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut numeric)
+                        .range(0..=100)
+                        .suffix(" %"),
+                )
+                .changed()
+            {
+                *value = numeric as u8;
+                *changed = true;
+            }
+        }
+    });
+}
+
+fn preset_current_configuration(
     ui: &mut Ui,
     tx: &mpsc::Sender<MonitorCommand>,
     guid: &str,
     settings: Option<PlanProcessorSettings>,
-    recommendation: HighPerformanceRecommendation,
-    diagnostic: HighPerformanceDiagnostics,
+    recommendation: ProcessorPresetRecommendation,
+    diagnostic: ProcessorPresetDiagnostics,
+    topology: CpuTopologyKind,
 ) {
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
@@ -714,13 +1048,13 @@ fn high_performance_current_configuration(
                     .strong(),
             );
             let (label, kind) = match diagnostic {
-                HighPerformanceDiagnostics::Configured => {
+                ProcessorPresetDiagnostics::Configured => {
                     ("Configured", design::StatusKind::Success)
                 }
-                HighPerformanceDiagnostics::NeedsReview => {
+                ProcessorPresetDiagnostics::NeedsReview => {
                     ("Not Configured", design::StatusKind::Warning)
                 }
-                HighPerformanceDiagnostics::Unavailable => {
+                ProcessorPresetDiagnostics::Unavailable => {
                     ("Unavailable", design::StatusKind::Muted)
                 }
             };
@@ -772,21 +1106,42 @@ fn high_performance_current_configuration(
                     ui.label(format_limit(settings.core_parking_min_cores_percent.ac));
                     ui.label(format_limit(settings.core_parking_min_cores_percent.dc));
                     ui.end_row();
+
+                    if topology == CpuTopologyKind::Hybrid {
+                        ui.label("Faster class min");
+                        ui.label(format_limit(settings.class1_min_percent.ac));
+                        ui.label(format_limit(settings.class1_min_percent.dc));
+                        ui.end_row();
+
+                        ui.label("Faster class max");
+                        ui.label(format_limit(settings.class1_max_percent.ac));
+                        ui.label(format_limit(settings.class1_max_percent.dc));
+                        ui.end_row();
+
+                        ui.label("Faster class parking min");
+                        ui.label(format_limit(
+                            settings.class1_core_parking_min_cores_percent.ac,
+                        ));
+                        ui.label(format_limit(
+                            settings.class1_core_parking_min_cores_percent.dc,
+                        ));
+                        ui.end_row();
+                    }
                 });
-            if diagnostic == HighPerformanceDiagnostics::NeedsReview
-                && ui.button("Apply recommended performance preset").clicked()
-            {
-                let _ = tx.send(MonitorCommand::ApplyHighPerformanceRecommendation {
-                    guid: guid.to_string(),
-                    recommendation,
-                });
-            }
         } else {
             ui.label(
                 RichText::new("Windows did not return performance settings for this plan.")
                     .weak()
                     .size(design::type_size::HELP),
             );
+        }
+        if diagnostic != ProcessorPresetDiagnostics::Configured
+            && ui.button("Apply recommended processor preset").clicked()
+        {
+            let _ = tx.send(MonitorCommand::ApplyProcessorPreset {
+                guid: guid.to_string(),
+                recommendation,
+            });
         }
     });
 }
@@ -802,148 +1157,6 @@ fn format_boost_mode(value: Option<u32>) -> String {
     value
         .map(|value| boost_mode_name(value as u8).to_string())
         .unwrap_or_else(|| "n/a".to_string())
-}
-
-fn processor_limit_controls(
-    ui: &mut Ui,
-    tx: &mpsc::Sender<MonitorCommand>,
-    guid: &str,
-    settings: Option<PlanProcessorSettings>,
-    recommendation: PlanProcessorRecommendation,
-    description: &str,
-    min_percent: &mut u8,
-    max_percent: &mut u8,
-    changed: &mut bool,
-) {
-    let diagnostic = PlanDiagnostics::for_settings(settings.as_ref(), recommendation);
-    settings_grid(ui, |ui| {
-        recommendation_controls(ui, description, min_percent, max_percent, changed);
-        current_configuration(ui, tx, guid, settings, recommendation, diagnostic);
-        ui.end_row();
-    });
-}
-
-fn recommendation_controls(
-    ui: &mut Ui,
-    description: &str,
-    min_percent: &mut u8,
-    max_percent: &mut u8,
-    changed: &mut bool,
-) {
-    ui.vertical(|ui| {
-        ui.label(
-            RichText::new(description)
-                .weak()
-                .size(design::type_size::HELP),
-        );
-        ui.add_space(design::spacing::ROW_GAP);
-
-        let mut min = *min_percent as u64;
-        numeric_value_cell(
-            ui,
-            "Min",
-            "Recommended minimum processor state for plugged-in and battery power.",
-            &mut min,
-            0..=100,
-            "%",
-            changed,
-        );
-        ui.add_space(design::spacing::ROW_GAP);
-
-        let mut max = *max_percent as u64;
-        numeric_value_cell(
-            ui,
-            "Max",
-            "Recommended maximum processor state for plugged-in and battery power.",
-            &mut max,
-            0..=100,
-            "%",
-            changed,
-        );
-
-        *min_percent = min.min(max) as u8;
-        *max_percent = max.max(min) as u8;
-    });
-}
-
-fn current_configuration(
-    ui: &mut Ui,
-    tx: &mpsc::Sender<MonitorCommand>,
-    guid: &str,
-    settings: Option<PlanProcessorSettings>,
-    recommendation: PlanProcessorRecommendation,
-    diagnostic: PlanDiagnostics,
-) {
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Current Configuration")
-                    .size(design::type_size::LABEL)
-                    .strong(),
-            );
-            let (label, kind) = match diagnostic {
-                PlanDiagnostics::Configured => ("Configured", design::StatusKind::Success),
-                PlanDiagnostics::NeedsReview => ("Not Configured", design::StatusKind::Warning),
-                PlanDiagnostics::Unavailable => ("Unavailable", design::StatusKind::Muted),
-            };
-            design::compact_status_badge(ui, label, kind);
-        });
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new("Minimum and maximum processor state for plugged-in and battery power.")
-                .weak()
-                .size(design::type_size::HELP),
-        );
-        ui.add_space(6.0);
-        if let Some(settings) = settings {
-            egui::Grid::new(ui.next_auto_id())
-                .num_columns(3)
-                .spacing([14.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("");
-                    ui.label(
-                        RichText::new("Plugged in")
-                            .weak()
-                            .size(design::type_size::HELP),
-                    );
-                    ui.label(
-                        RichText::new("On battery")
-                            .weak()
-                            .size(design::type_size::HELP),
-                    );
-                    ui.end_row();
-
-                    ui.label("Min");
-                    ui.label(format_limit(settings.min_percent.ac));
-                    ui.label(format_limit(settings.min_percent.dc));
-                    ui.end_row();
-
-                    ui.label("Max");
-                    ui.label(format_limit(settings.max_percent.ac));
-                    ui.label(format_limit(settings.max_percent.dc));
-                    ui.end_row();
-                });
-            if diagnostic == PlanDiagnostics::NeedsReview
-                && ui
-                    .button(format!(
-                        "Apply recommended CPU limits ({}% min, {}% max)",
-                        recommendation.min_percent, recommendation.max_percent
-                    ))
-                    .clicked()
-            {
-                let _ = tx.send(MonitorCommand::ApplyPlanProcessorRecommendation {
-                    guid: guid.to_string(),
-                    recommendation,
-                });
-            }
-        } else {
-            ui.label(
-                RichText::new("Windows did not return processor limit settings for this plan.")
-                    .weak()
-                    .size(design::type_size::HELP),
-            );
-        }
-    });
 }
 
 fn turbo_rescue_controls(

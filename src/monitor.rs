@@ -9,8 +9,8 @@ use crate::idle::{IdleReader, WindowsIdleReader};
 use crate::power::PowerApi;
 use crate::types::{
     AppState, CpuFrequencySample, CpuHistoryEnergyEstimate, CpuHistoryPlanKind, CpuHistoryPoint,
-    HighPerformanceDiagnostics, HighPerformanceRecommendation, MonitorCommand, PowerEvent,
-    PowerPlan, RunningProcess, UltimatePerformanceSetupState,
+    MonitorCommand, PowerEvent, PowerPlan, ProcessorPresetDiagnostics,
+    ProcessorPresetRecommendation, RunningProcess, UltimatePerformanceSetupState,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{mpsc, Arc, OnceLock, RwLock};
@@ -23,7 +23,7 @@ const DASHBOARD_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 fn install_ultimate_performance(
     power: &dyn PowerApi,
     state: &mut MonitorState,
-    recommendation: HighPerformanceRecommendation,
+    recommendation: ProcessorPresetRecommendation,
 ) -> Result<PowerPlan, String> {
     install_ultimate_performance_with_save(power, state, recommendation, &|config| {
         crate::config::save(config).map_err(|err| err.to_string())
@@ -33,7 +33,7 @@ fn install_ultimate_performance(
 fn install_ultimate_performance_with_save(
     power: &dyn PowerApi,
     state: &mut MonitorState,
-    recommendation: HighPerformanceRecommendation,
+    recommendation: ProcessorPresetRecommendation,
     save_config: &dyn Fn(&Config) -> Result<(), String>,
 ) -> Result<PowerPlan, String> {
     let existing = crate::config::find_ultimate_performance_plan(&state.available_plans).cloned();
@@ -58,14 +58,14 @@ fn install_ultimate_performance_with_save(
         }
     };
 
-    if let Err(err) = power.apply_high_performance_recommendation(&plan.guid, recommendation) {
+    if let Err(err) = power.apply_processor_preset(&plan.guid, recommendation) {
         return Err(cleanup(format!(
             "Ultimate Performance was created, but its recommended settings could not be applied: {err}"
         )));
     }
     let settings = power.read_plan_processor_settings(&plan.guid).ok();
-    if HighPerformanceDiagnostics::for_settings(settings.as_ref(), recommendation)
-        != HighPerformanceDiagnostics::Configured
+    if ProcessorPresetDiagnostics::for_settings(settings.as_ref(), recommendation)
+        != ProcessorPresetDiagnostics::Configured
     {
         return Err(cleanup(
             "Ultimate Performance settings could not be verified after writing them".to_string(),
@@ -616,26 +616,11 @@ pub fn run(
                     plan_processor_settings =
                         refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
                 }
-                MonitorCommand::ApplyPlanProcessorRecommendation {
+                MonitorCommand::ApplyProcessorPreset {
                     guid,
                     recommendation,
                 } => {
-                    if let Err(err) =
-                        power.apply_plan_processor_recommendation(&guid, recommendation)
-                    {
-                        app_state.write().unwrap().last_error =
-                            Some(format!("Failed to update processor limits: {}", err));
-                    }
-                    plan_processor_settings =
-                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
-                }
-                MonitorCommand::ApplyHighPerformanceRecommendation {
-                    guid,
-                    recommendation,
-                } => {
-                    if let Err(err) =
-                        power.apply_high_performance_recommendation(&guid, recommendation)
-                    {
+                    if let Err(err) = power.apply_processor_preset(&guid, recommendation) {
                         app_state.write().unwrap().last_error = Some(format!(
                             "Failed to update high-performance settings: {}",
                             err
@@ -892,7 +877,7 @@ fn refresh_plan_processor_settings(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::types::CpuHistoryPlanKind;
+    use crate::types::{CpuHistoryPlanKind, CpuTopologyKind};
     use std::time::{Duration, Instant};
 
     fn test_config() -> Config {
@@ -1463,7 +1448,9 @@ mod tests {
         let mut config = test_config();
         config.general.performance_plan_guid = "perf-guid".into();
         let plans = power.enumerate_plans().unwrap();
-        let recommendation = config.general.high_performance_recommendation();
+        let recommendation = config
+            .general
+            .high_performance_recommendation(CpuTopologyKind::Homogeneous);
         let mut state = MonitorState::new(config, "balanced-guid".into(), plans);
 
         let plan =
@@ -1476,11 +1463,11 @@ mod tests {
         assert_eq!(state.forced_plan_guid.as_deref(), Some(plan.guid.as_str()));
         assert_eq!(power.get_active_plan().unwrap().guid, plan.guid);
         assert_eq!(
-            HighPerformanceDiagnostics::for_settings(
+            ProcessorPresetDiagnostics::for_settings(
                 Some(&power.read_plan_processor_settings(&plan.guid).unwrap()),
                 recommendation,
             ),
-            HighPerformanceDiagnostics::Configured
+            ProcessorPresetDiagnostics::Configured
         );
     }
 
@@ -1490,7 +1477,9 @@ mod tests {
         let mut config = test_config();
         config.general.performance_plan_guid = "perf-guid".into();
         let plans = power.enumerate_plans().unwrap();
-        let recommendation = config.general.high_performance_recommendation();
+        let recommendation = config
+            .general
+            .high_performance_recommendation(CpuTopologyKind::Homogeneous);
         let mut state = MonitorState::new(config, "balanced-guid".into(), plans);
 
         let error =

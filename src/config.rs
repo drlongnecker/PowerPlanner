@@ -1,6 +1,8 @@
 // src/config.rs
 use crate::energy::{CpuPowerProfile, EnergyRate};
-use crate::types::{HighPerformanceRecommendation, PlanProcessorRecommendation, PowerPlan};
+use crate::types::{
+    CpuTopologyKind, PowerPlan, ProcessorClassRecommendation, ProcessorPresetRecommendation,
+};
 use anyhow::Result as AnyResult;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -120,6 +122,10 @@ pub struct GeneralConfig {
     pub standard_cpu_min_percent: u8,
     #[serde(default = "default_standard_cpu_max_percent")]
     pub standard_cpu_max_percent: u8,
+    #[serde(default = "default_standard_boost_mode")]
+    pub standard_boost_mode: u8,
+    #[serde(default = "default_standard_core_parking_min_cores_percent")]
+    pub standard_core_parking_min_cores_percent: Option<u8>,
     #[serde(default = "default_performance_cpu_min_percent")]
     pub performance_cpu_min_percent: u8,
     #[serde(default = "default_performance_cpu_max_percent")]
@@ -132,6 +138,10 @@ pub struct GeneralConfig {
     pub low_power_cpu_min_percent: u8,
     #[serde(default = "default_low_power_cpu_max_percent")]
     pub low_power_cpu_max_percent: u8,
+    #[serde(default = "default_low_power_boost_mode")]
+    pub low_power_boost_mode: u8,
+    #[serde(default = "default_low_power_core_parking_min_cores_percent")]
+    pub low_power_core_parking_min_cores_percent: Option<u8>,
     #[serde(default = "default_idle_wait_seconds")]
     pub idle_wait_seconds: u64,
     #[serde(
@@ -183,16 +193,22 @@ fn default_idle_wait_seconds() -> u64 {
     600
 }
 fn default_standard_cpu_min_percent() -> u8 {
-    PlanProcessorRecommendation::standard_default().min_percent as u8
+    5
 }
 fn default_standard_cpu_max_percent() -> u8 {
-    PlanProcessorRecommendation::standard_default().max_percent as u8
+    99
+}
+fn default_standard_boost_mode() -> u8 {
+    0
+}
+fn default_standard_core_parking_min_cores_percent() -> Option<u8> {
+    None
 }
 fn default_performance_cpu_min_percent() -> u8 {
-    PlanProcessorRecommendation::performance_default().min_percent as u8
+    100
 }
 fn default_performance_cpu_max_percent() -> u8 {
-    PlanProcessorRecommendation::performance_default().max_percent as u8
+    100
 }
 fn default_performance_boost_mode() -> u8 {
     2
@@ -201,10 +217,16 @@ fn default_performance_core_parking_min_cores_percent() -> u8 {
     100
 }
 fn default_low_power_cpu_min_percent() -> u8 {
-    PlanProcessorRecommendation::low_power_default().min_percent as u8
+    0
 }
 fn default_low_power_cpu_max_percent() -> u8 {
-    PlanProcessorRecommendation::low_power_default().max_percent as u8
+    20
+}
+fn default_low_power_boost_mode() -> u8 {
+    0
+}
+fn default_low_power_core_parking_min_cores_percent() -> Option<u8> {
+    Some(0)
 }
 fn default_cpu_average_threshold_percent() -> u8 {
     10
@@ -292,6 +314,9 @@ impl Default for Config {
                 performance_plan_guid: String::new(),
                 standard_cpu_min_percent: default_standard_cpu_min_percent(),
                 standard_cpu_max_percent: default_standard_cpu_max_percent(),
+                standard_boost_mode: default_standard_boost_mode(),
+                standard_core_parking_min_cores_percent:
+                    default_standard_core_parking_min_cores_percent(),
                 performance_cpu_min_percent: default_performance_cpu_min_percent(),
                 performance_cpu_max_percent: default_performance_cpu_max_percent(),
                 performance_boost_mode: default_performance_boost_mode(),
@@ -299,6 +324,9 @@ impl Default for Config {
                     default_performance_core_parking_min_cores_percent(),
                 low_power_cpu_min_percent: default_low_power_cpu_min_percent(),
                 low_power_cpu_max_percent: default_low_power_cpu_max_percent(),
+                low_power_boost_mode: default_low_power_boost_mode(),
+                low_power_core_parking_min_cores_percent:
+                    default_low_power_core_parking_min_cores_percent(),
                 idle_wait_seconds: default_idle_wait_seconds(),
                 cpu_average_threshold_percent: default_cpu_average_threshold_percent(),
                 cpu_average_window_seconds: default_cpu_average_window_seconds(),
@@ -399,22 +427,27 @@ mod tests {
         assert!(c.general.standard_plan_guid.is_empty());
         assert!(c.general.low_power_plan_guid.is_empty());
         assert!(c.general.performance_plan_guid.is_empty());
+        let standard = c
+            .general
+            .standard_processor_preset(CpuTopologyKind::Homogeneous);
+        assert_eq!((standard.min_percent, standard.max_percent), (5, 99));
+        let performance = c
+            .general
+            .high_performance_recommendation(CpuTopologyKind::Homogeneous);
         assert_eq!(
-            c.general.standard_recommendation(),
-            PlanProcessorRecommendation::standard_default()
-        );
-        assert_eq!(
-            c.general
-                .high_performance_recommendation()
-                .processor_limits(),
-            PlanProcessorRecommendation::performance_default()
+            (performance.min_percent, performance.max_percent),
+            (100, 100)
         );
         assert_eq!(c.general.performance_boost_mode, 2);
         assert_eq!(c.general.performance_core_parking_min_cores_percent, 100);
-        assert_eq!(
-            c.general.low_power_recommendation(),
-            PlanProcessorRecommendation::low_power_default()
-        );
+        assert_eq!(c.general.standard_boost_mode, 0);
+        assert_eq!(c.general.standard_core_parking_min_cores_percent, None);
+        assert_eq!(c.general.low_power_boost_mode, 0);
+        assert_eq!(c.general.low_power_core_parking_min_cores_percent, Some(0));
+        let low_power = c
+            .general
+            .low_power_processor_preset(CpuTopologyKind::Homogeneous);
+        assert_eq!((low_power.min_percent, low_power.max_percent), (0, 20));
         assert_eq!(c.general.idle_wait_seconds, 600);
         assert_eq!(c.general.cpu_average_threshold_percent, 10);
         assert_eq!(c.general.cpu_average_window_seconds, 60);
@@ -705,7 +738,7 @@ processes = []
     }
 
     #[test]
-    fn test_legacy_config_defaults_advanced_performance_recommendations() {
+    fn test_legacy_config_defaults_advanced_processor_recommendations() {
         let c = Config::default();
         let mut value = toml::Value::try_from(&c).unwrap();
         let general = value
@@ -714,6 +747,10 @@ processes = []
             .unwrap();
         general.remove("performance_boost_mode");
         general.remove("performance_core_parking_min_cores_percent");
+        general.remove("standard_boost_mode");
+        general.remove("standard_core_parking_min_cores_percent");
+        general.remove("low_power_boost_mode");
+        general.remove("low_power_core_parking_min_cores_percent");
 
         let loaded: Config = value.try_into().unwrap();
 
@@ -721,6 +758,38 @@ processes = []
         assert_eq!(
             loaded.general.performance_core_parking_min_cores_percent,
             100
+        );
+        assert_eq!(loaded.general.standard_boost_mode, 0);
+        assert_eq!(loaded.general.standard_core_parking_min_cores_percent, None);
+        assert_eq!(loaded.general.low_power_boost_mode, 0);
+        assert_eq!(
+            loaded.general.low_power_core_parking_min_cores_percent,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn test_processor_presets_add_class1_only_for_confirmed_hybrid_cpu() {
+        let c = Config::default();
+
+        let homogeneous = c
+            .general
+            .low_power_processor_preset(CpuTopologyKind::Homogeneous);
+        assert!(homogeneous.class1.is_none());
+
+        let hybrid = c
+            .general
+            .low_power_processor_preset(CpuTopologyKind::Hybrid);
+        let class1 = hybrid.class1.unwrap();
+        assert_eq!(class1.min_percent, 0);
+        assert_eq!(class1.max_percent, 20);
+        assert_eq!(class1.core_parking_min_cores_percent, Some(0));
+
+        let standard = c.general.standard_processor_preset(CpuTopologyKind::Hybrid);
+        assert_eq!(standard.core_parking_min_cores_percent, None);
+        assert_eq!(
+            standard.class1.unwrap().core_parking_min_cores_percent,
+            None
         );
     }
 
@@ -824,26 +893,42 @@ pub fn initialize_plan_selection(
 }
 
 impl GeneralConfig {
-    pub fn standard_recommendation(&self) -> PlanProcessorRecommendation {
-        PlanProcessorRecommendation::new(
-            self.standard_cpu_min_percent as u32,
-            self.standard_cpu_max_percent as u32,
+    pub fn standard_processor_preset(
+        &self,
+        topology: CpuTopologyKind,
+    ) -> ProcessorPresetRecommendation {
+        processor_preset(
+            self.standard_cpu_min_percent,
+            self.standard_cpu_max_percent,
+            Some(self.standard_boost_mode),
+            self.standard_core_parking_min_cores_percent,
+            topology,
         )
     }
 
-    pub fn high_performance_recommendation(&self) -> HighPerformanceRecommendation {
-        HighPerformanceRecommendation {
-            min_percent: self.performance_cpu_min_percent as u32,
-            max_percent: self.performance_cpu_max_percent as u32,
-            boost_mode: self.performance_boost_mode as u32,
-            core_parking_min_cores_percent: self.performance_core_parking_min_cores_percent as u32,
-        }
+    pub fn high_performance_recommendation(
+        &self,
+        topology: CpuTopologyKind,
+    ) -> ProcessorPresetRecommendation {
+        processor_preset(
+            self.performance_cpu_min_percent,
+            self.performance_cpu_max_percent,
+            Some(self.performance_boost_mode),
+            Some(self.performance_core_parking_min_cores_percent),
+            topology,
+        )
     }
 
-    pub fn low_power_recommendation(&self) -> PlanProcessorRecommendation {
-        PlanProcessorRecommendation::new(
-            self.low_power_cpu_min_percent as u32,
-            self.low_power_cpu_max_percent as u32,
+    pub fn low_power_processor_preset(
+        &self,
+        topology: CpuTopologyKind,
+    ) -> ProcessorPresetRecommendation {
+        processor_preset(
+            self.low_power_cpu_min_percent,
+            self.low_power_cpu_max_percent,
+            Some(self.low_power_boost_mode),
+            self.low_power_core_parking_min_cores_percent,
+            topology,
         )
     }
 
@@ -872,5 +957,25 @@ impl GeneralConfig {
                 self.cpu_power_source_label.clone()
             },
         }
+    }
+}
+
+fn processor_preset(
+    min_percent: u8,
+    max_percent: u8,
+    boost_mode: Option<u8>,
+    core_parking_min_cores_percent: Option<u8>,
+    topology: CpuTopologyKind,
+) -> ProcessorPresetRecommendation {
+    ProcessorPresetRecommendation {
+        min_percent: min_percent as u32,
+        max_percent: max_percent as u32,
+        boost_mode: boost_mode.map(u32::from),
+        core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
+        class1: (topology == CpuTopologyKind::Hybrid).then_some(ProcessorClassRecommendation {
+            min_percent: min_percent as u32,
+            max_percent: max_percent as u32,
+            core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
+        }),
     }
 }

@@ -23,6 +23,30 @@ pub struct CpuInfo {
     pub base_mhz: Option<u32>,
     pub cores: Option<u32>,
     pub logical_processors: Option<u32>,
+    pub efficiency_classes: Vec<CpuEfficiencyClass>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuEfficiencyClass {
+    pub value: u8,
+    pub logical_processors: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuTopologyKind {
+    Unknown,
+    Homogeneous,
+    Hybrid,
+}
+
+impl CpuInfo {
+    pub fn topology_kind(&self) -> CpuTopologyKind {
+        match self.efficiency_classes.len() {
+            1 => CpuTopologyKind::Homogeneous,
+            2 => CpuTopologyKind::Hybrid,
+            _ => CpuTopologyKind::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -42,80 +66,72 @@ pub struct PlanProcessorSettings {
     pub max_percent: ProcessorLimit,
     pub boost_mode: ProcessorLimit,
     pub core_parking_min_cores_percent: ProcessorLimit,
+    pub class1_min_percent: ProcessorLimit,
+    pub class1_max_percent: ProcessorLimit,
+    pub class1_core_parking_min_cores_percent: ProcessorLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PlanProcessorRecommendation {
+pub struct ProcessorClassRecommendation {
     pub min_percent: u32,
     pub max_percent: u32,
-}
-
-impl PlanProcessorRecommendation {
-    pub fn new(min_percent: u32, max_percent: u32) -> Self {
-        Self {
-            min_percent,
-            max_percent,
-        }
-    }
-
-    pub fn standard_default() -> Self {
-        Self {
-            min_percent: 5,
-            max_percent: 99,
-        }
-    }
-
-    pub fn low_power_default() -> Self {
-        Self {
-            min_percent: 0,
-            max_percent: 20,
-        }
-    }
-
-    pub fn performance_default() -> Self {
-        Self {
-            min_percent: 100,
-            max_percent: 100,
-        }
-    }
+    pub core_parking_min_cores_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HighPerformanceRecommendation {
+pub struct ProcessorPresetRecommendation {
     pub min_percent: u32,
     pub max_percent: u32,
-    pub boost_mode: u32,
-    pub core_parking_min_cores_percent: u32,
+    pub boost_mode: Option<u32>,
+    pub core_parking_min_cores_percent: Option<u32>,
+    pub class1: Option<ProcessorClassRecommendation>,
 }
 
-impl HighPerformanceRecommendation {
-    pub fn processor_limits(self) -> PlanProcessorRecommendation {
-        PlanProcessorRecommendation::new(self.min_percent, self.max_percent)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanDiagnostics {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessorPresetDiagnostics {
     Configured,
     NeedsReview,
     Unavailable,
 }
 
-impl PlanDiagnostics {
+impl ProcessorPresetDiagnostics {
     pub fn for_settings(
         settings: Option<&PlanProcessorSettings>,
-        recommendation: PlanProcessorRecommendation,
+        recommendation: ProcessorPresetRecommendation,
     ) -> Self {
         let Some(settings) = settings else {
             return Self::Unavailable;
         };
 
-        let values = [
+        let mut values = vec![
             settings.min_percent.ac,
             settings.min_percent.dc,
             settings.max_percent.ac,
             settings.max_percent.dc,
         ];
+        if recommendation.boost_mode.is_some() {
+            values.extend([settings.boost_mode.ac, settings.boost_mode.dc]);
+        }
+        if recommendation.core_parking_min_cores_percent.is_some() {
+            values.extend([
+                settings.core_parking_min_cores_percent.ac,
+                settings.core_parking_min_cores_percent.dc,
+            ]);
+        }
+        if let Some(class1) = recommendation.class1 {
+            values.extend([
+                settings.class1_min_percent.ac,
+                settings.class1_min_percent.dc,
+                settings.class1_max_percent.ac,
+                settings.class1_max_percent.dc,
+            ]);
+            if class1.core_parking_min_cores_percent.is_some() {
+                values.extend([
+                    settings.class1_core_parking_min_cores_percent.ac,
+                    settings.class1_core_parking_min_cores_percent.dc,
+                ]);
+            }
+        }
         if values.iter().any(|value| value.is_none()) {
             return Self::Unavailable;
         }
@@ -124,54 +140,28 @@ impl PlanDiagnostics {
             && settings.min_percent.dc == Some(recommendation.min_percent)
             && settings.max_percent.ac == Some(recommendation.max_percent)
             && settings.max_percent.dc == Some(recommendation.max_percent)
-        {
-            Self::Configured
-        } else {
-            Self::NeedsReview
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HighPerformanceDiagnostics {
-    Configured,
-    NeedsReview,
-    Unavailable,
-}
-
-impl HighPerformanceDiagnostics {
-    pub fn for_settings(
-        settings: Option<&PlanProcessorSettings>,
-        recommendation: HighPerformanceRecommendation,
-    ) -> Self {
-        let Some(settings) = settings else {
-            return Self::Unavailable;
-        };
-
-        let values = [
-            settings.min_percent.ac,
-            settings.min_percent.dc,
-            settings.max_percent.ac,
-            settings.max_percent.dc,
-            settings.boost_mode.ac,
-            settings.boost_mode.dc,
-            settings.core_parking_min_cores_percent.ac,
-            settings.core_parking_min_cores_percent.dc,
-        ];
-        if values.iter().any(|value| value.is_none()) {
-            return Self::Unavailable;
-        }
-
-        if settings.min_percent.ac == Some(recommendation.min_percent)
-            && settings.min_percent.dc == Some(recommendation.min_percent)
-            && settings.max_percent.ac == Some(recommendation.max_percent)
-            && settings.max_percent.dc == Some(recommendation.max_percent)
-            && settings.boost_mode.ac == Some(recommendation.boost_mode)
-            && settings.boost_mode.dc == Some(recommendation.boost_mode)
-            && settings.core_parking_min_cores_percent.ac
-                == Some(recommendation.core_parking_min_cores_percent)
-            && settings.core_parking_min_cores_percent.dc
-                == Some(recommendation.core_parking_min_cores_percent)
+            && recommendation
+                .boost_mode
+                .is_none_or(|value| settings.boost_mode.ac == Some(value))
+            && recommendation
+                .boost_mode
+                .is_none_or(|value| settings.boost_mode.dc == Some(value))
+            && recommendation
+                .core_parking_min_cores_percent
+                .is_none_or(|value| {
+                    settings.core_parking_min_cores_percent.ac == Some(value)
+                        && settings.core_parking_min_cores_percent.dc == Some(value)
+                })
+            && recommendation.class1.is_none_or(|class1| {
+                settings.class1_min_percent.ac == Some(class1.min_percent)
+                    && settings.class1_min_percent.dc == Some(class1.min_percent)
+                    && settings.class1_max_percent.ac == Some(class1.max_percent)
+                    && settings.class1_max_percent.dc == Some(class1.max_percent)
+                    && class1.core_parking_min_cores_percent.is_none_or(|value| {
+                        settings.class1_core_parking_min_cores_percent.ac == Some(value)
+                            && settings.class1_core_parking_min_cores_percent.dc == Some(value)
+                    })
+            })
         {
             Self::Configured
         } else {
@@ -260,16 +250,12 @@ pub enum MonitorCommand {
     ForceConfiguredPerformance,
     UpdateWatchlist(Vec<String>), // replace watchlist; monitor picks up next tick
     UpdateConfig(crate::config::Config), // replaces full config; monitor picks up next tick
-    ApplyPlanProcessorRecommendation {
+    ApplyProcessorPreset {
         guid: String,
-        recommendation: PlanProcessorRecommendation,
-    },
-    ApplyHighPerformanceRecommendation {
-        guid: String,
-        recommendation: HighPerformanceRecommendation,
+        recommendation: ProcessorPresetRecommendation,
     },
     InstallUltimatePerformance {
-        recommendation: HighPerformanceRecommendation,
+        recommendation: ProcessorPresetRecommendation,
     },
     RefreshPlans,
     Stop,
@@ -339,89 +325,101 @@ mod tests {
                 ac: Some(100),
                 dc: Some(100),
             },
+            class1_min_percent: ProcessorLimit::default(),
+            class1_max_percent: ProcessorLimit::default(),
+            class1_core_parking_min_cores_percent: ProcessorLimit::default(),
         }
     }
 
     #[test]
-    fn plan_diagnostics_marks_matching_values_configured() {
-        assert_eq!(
-            PlanDiagnostics::for_settings(
-                Some(&settings(5, 99)),
-                PlanProcessorRecommendation::standard_default()
-            ),
-            PlanDiagnostics::Configured
-        );
-    }
-
-    #[test]
-    fn plan_diagnostics_marks_mismatched_values_for_review() {
-        assert_eq!(
-            PlanDiagnostics::for_settings(
-                Some(&settings(100, 100)),
-                PlanProcessorRecommendation::standard_default()
-            ),
-            PlanDiagnostics::NeedsReview
-        );
-    }
-
-    #[test]
-    fn plan_diagnostics_marks_missing_values_unavailable() {
-        let settings = PlanProcessorSettings {
-            min_percent: ProcessorLimit {
-                ac: Some(5),
-                dc: None,
-            },
-            max_percent: ProcessorLimit {
-                ac: Some(99),
-                dc: Some(99),
-            },
-            boost_mode: ProcessorLimit::default(),
-            core_parking_min_cores_percent: ProcessorLimit::default(),
-        };
-
-        assert_eq!(
-            PlanDiagnostics::for_settings(
-                Some(&settings),
-                PlanProcessorRecommendation::standard_default(),
-            ),
-            PlanDiagnostics::Unavailable
-        );
-    }
-
-    #[test]
-    fn plan_diagnostics_marks_unreadable_settings_unavailable() {
-        assert_eq!(
-            PlanDiagnostics::for_settings(None, PlanProcessorRecommendation::standard_default()),
-            PlanDiagnostics::Unavailable
-        );
-    }
-
-    #[test]
-    fn high_performance_diagnostics_cover_hidden_processor_settings() {
-        let recommendation = HighPerformanceRecommendation {
+    fn processor_preset_diagnostics_cover_hidden_processor_settings() {
+        let recommendation = ProcessorPresetRecommendation {
             min_percent: 100,
             max_percent: 100,
-            boost_mode: 2,
-            core_parking_min_cores_percent: 100,
+            boost_mode: Some(2),
+            core_parking_min_cores_percent: Some(100),
+            class1: None,
         };
         let configured = settings(100, 100);
         assert_eq!(
-            HighPerformanceDiagnostics::for_settings(Some(&configured), recommendation),
-            HighPerformanceDiagnostics::Configured
+            ProcessorPresetDiagnostics::for_settings(Some(&configured), recommendation),
+            ProcessorPresetDiagnostics::Configured
         );
 
         let mut needs_review = configured;
         needs_review.boost_mode.ac = Some(1);
         assert_eq!(
-            HighPerformanceDiagnostics::for_settings(Some(&needs_review), recommendation),
-            HighPerformanceDiagnostics::NeedsReview
+            ProcessorPresetDiagnostics::for_settings(Some(&needs_review), recommendation),
+            ProcessorPresetDiagnostics::NeedsReview
         );
 
         let mut unavailable = configured;
         unavailable.core_parking_min_cores_percent.dc = None;
         assert_eq!(
-            HighPerformanceDiagnostics::for_settings(Some(&unavailable), recommendation),
-            HighPerformanceDiagnostics::Unavailable
+            ProcessorPresetDiagnostics::for_settings(Some(&unavailable), recommendation),
+            ProcessorPresetDiagnostics::Unavailable
+        );
+    }
+
+    #[test]
+    fn cpu_topology_classification_is_conservative() {
+        let mut info = CpuInfo::default();
+        assert_eq!(info.topology_kind(), CpuTopologyKind::Unknown);
+
+        info.efficiency_classes = vec![CpuEfficiencyClass {
+            value: 0,
+            logical_processors: 8,
+        }];
+        assert_eq!(info.topology_kind(), CpuTopologyKind::Homogeneous);
+
+        info.efficiency_classes.push(CpuEfficiencyClass {
+            value: 2,
+            logical_processors: 8,
+        });
+        assert_eq!(info.topology_kind(), CpuTopologyKind::Hybrid);
+
+        info.efficiency_classes.push(CpuEfficiencyClass {
+            value: 7,
+            logical_processors: 2,
+        });
+        assert_eq!(info.topology_kind(), CpuTopologyKind::Unknown);
+    }
+
+    #[test]
+    fn hybrid_preset_requires_class1_values_but_ignores_preserved_parking() {
+        let mut configured = settings(5, 99);
+        configured.boost_mode = ProcessorLimit {
+            ac: Some(0),
+            dc: Some(0),
+        };
+        configured.class1_min_percent = ProcessorLimit {
+            ac: Some(5),
+            dc: Some(5),
+        };
+        configured.class1_max_percent = ProcessorLimit {
+            ac: Some(99),
+            dc: Some(99),
+        };
+        let recommendation = ProcessorPresetRecommendation {
+            min_percent: 5,
+            max_percent: 99,
+            boost_mode: Some(0),
+            core_parking_min_cores_percent: None,
+            class1: Some(ProcessorClassRecommendation {
+                min_percent: 5,
+                max_percent: 99,
+                core_parking_min_cores_percent: None,
+            }),
+        };
+
+        assert_eq!(
+            ProcessorPresetDiagnostics::for_settings(Some(&configured), recommendation),
+            ProcessorPresetDiagnostics::Configured
+        );
+        configured.class1_max_percent.dc = None;
+        assert_eq!(
+            ProcessorPresetDiagnostics::for_settings(Some(&configured), recommendation),
+            ProcessorPresetDiagnostics::Unavailable
         );
     }
 }

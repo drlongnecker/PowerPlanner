@@ -1,7 +1,7 @@
 // src/power.rs
 use crate::types::{
-    BatteryStatus, CpuFrequencySample, CpuInfo, HighPerformanceRecommendation,
-    PlanProcessorRecommendation, PlanProcessorSettings, PowerPlan, ProcessorLimit,
+    BatteryStatus, CpuEfficiencyClass, CpuFrequencySample, CpuInfo, PlanProcessorSettings,
+    PowerPlan, ProcessorLimit, ProcessorPresetRecommendation,
 };
 use anyhow::{bail, Result};
 #[cfg(windows)]
@@ -17,15 +17,10 @@ pub trait PowerApi: Send + Sync {
     fn get_cpu_info(&self) -> Result<CpuInfo>;
     fn get_cpu_frequency_sample(&self) -> Result<CpuFrequencySample>;
     fn read_plan_processor_settings(&self, guid: &str) -> Result<PlanProcessorSettings>;
-    fn apply_plan_processor_recommendation(
+    fn apply_processor_preset(
         &self,
         guid: &str,
-        recommendation: PlanProcessorRecommendation,
-    ) -> Result<()>;
-    fn apply_high_performance_recommendation(
-        &self,
-        guid: &str,
-        recommendation: HighPerformanceRecommendation,
+        recommendation: ProcessorPresetRecommendation,
     ) -> Result<()>;
 }
 
@@ -119,12 +114,14 @@ impl PowerApi for WindowsPowerApi {
             .map(|cpu| cpu.vendor_id().to_string())
             .unwrap_or_default();
         let base_mhz = parse_base_mhz_from_brand(&brand);
+        let efficiency_classes = cpu_efficiency_classes();
         Ok(CpuInfo {
             manufacturer,
             brand,
             base_mhz,
             cores: sys.physical_core_count().map(|cores| cores as u32),
             logical_processors: Some(sys.cpus().len() as u32).filter(|count| *count > 0),
+            efficiency_classes,
         })
     }
 
@@ -136,21 +133,138 @@ impl PowerApi for WindowsPowerApi {
         read_plan_processor_settings(guid)
     }
 
-    fn apply_plan_processor_recommendation(
+    fn apply_processor_preset(
         &self,
         guid: &str,
-        recommendation: PlanProcessorRecommendation,
+        recommendation: ProcessorPresetRecommendation,
     ) -> Result<()> {
-        write_plan_processor_settings(guid, recommendation)
+        write_processor_preset(guid, recommendation)
+    }
+}
+
+fn parse_cpu_efficiency_classes(data: &[u8]) -> Result<Vec<CpuEfficiencyClass>> {
+    const HEADER_SIZE: usize = 8;
+    const EFFICIENCY_CLASS_OFFSET: usize = 18;
+
+    let mut offset = 0;
+    let mut counts = std::collections::BTreeMap::<u8, u32>::new();
+    while offset < data.len() {
+        let remaining = &data[offset..];
+        if remaining.len() < HEADER_SIZE {
+            bail!("CPU set information ended with a truncated record header");
+        }
+
+        let size = u32::from_le_bytes(remaining[0..4].try_into().unwrap()) as usize;
+        if size < HEADER_SIZE {
+            bail!("CPU set information record has invalid size {}", size);
+        }
+        if size > remaining.len() {
+            bail!(
+                "CPU set information record size {} exceeds {} remaining bytes",
+                size,
+                remaining.len()
+            );
+        }
+
+        let information_type = i32::from_le_bytes(remaining[4..8].try_into().unwrap());
+        if information_type == 0 {
+            if size <= EFFICIENCY_CLASS_OFFSET {
+                bail!("CPU set information record is too small to contain EfficiencyClass");
+            }
+            let efficiency_class = remaining[EFFICIENCY_CLASS_OFFSET];
+            let count = counts.entry(efficiency_class).or_default();
+            *count = count.saturating_add(1);
+        }
+
+        offset += size;
     }
 
-    fn apply_high_performance_recommendation(
-        &self,
-        guid: &str,
-        recommendation: HighPerformanceRecommendation,
-    ) -> Result<()> {
-        write_high_performance_settings(guid, recommendation)
+    Ok(counts
+        .into_iter()
+        .map(|(value, logical_processors)| CpuEfficiencyClass {
+            value,
+            logical_processors,
+        })
+        .collect())
+}
+
+#[cfg(windows)]
+fn cpu_efficiency_classes() -> Vec<CpuEfficiencyClass> {
+    static CLASSES: OnceLock<Vec<CpuEfficiencyClass>> = OnceLock::new();
+    CLASSES
+        .get_or_init(|| match read_cpu_efficiency_classes() {
+            Ok(classes) => classes,
+            Err(err) => {
+                log::warn!("CPU efficiency topology unavailable: {err}");
+                Vec::new()
+            }
+        })
+        .clone()
+}
+
+#[cfg(windows)]
+fn read_cpu_efficiency_classes() -> Result<Vec<CpuEfficiencyClass>> {
+    use std::mem::{size_of, MaybeUninit};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::SystemInformation::{
+        GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
+    };
+
+    let mut required = 0_u32;
+    let sizing_result =
+        unsafe { GetSystemCpuSetInformation(None, 0, &mut required, HANDLE::default(), 0) };
+    if required == 0 {
+        if sizing_result.as_bool() {
+            return Ok(Vec::new());
+        }
+        return Err(windows::core::Error::from_win32().into());
     }
+
+    for _ in 0..3 {
+        let element_size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
+        let element_count = (required as usize)
+            .checked_add(element_size - 1)
+            .ok_or_else(|| anyhow::anyhow!("CPU set information buffer size overflow"))?
+            / element_size;
+        let mut buffer = vec![MaybeUninit::<SYSTEM_CPU_SET_INFORMATION>::uninit(); element_count];
+        let buffer_bytes = buffer
+            .len()
+            .checked_mul(element_size)
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or_else(|| anyhow::anyhow!("CPU set information buffer is too large"))?;
+        let mut returned = required;
+        let result = unsafe {
+            GetSystemCpuSetInformation(
+                Some(buffer.as_mut_ptr().cast()),
+                buffer_bytes,
+                &mut returned,
+                HANDLE::default(),
+                0,
+            )
+        };
+        if result.as_bool() {
+            if returned > buffer_bytes {
+                bail!(
+                    "GetSystemCpuSetInformation returned {} bytes for a {} byte buffer",
+                    returned,
+                    buffer_bytes
+                );
+            }
+            let bytes = unsafe {
+                std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), returned as usize)
+            };
+            return parse_cpu_efficiency_classes(bytes);
+        }
+
+        let error = windows::core::Error::from_win32();
+        if returned > buffer_bytes {
+            required = returned;
+            continue;
+        }
+        return Err(error.into());
+    }
+
+    bail!("CPU set information changed size repeatedly while being queried")
 }
 
 #[cfg(windows)]
@@ -394,11 +508,20 @@ const GUID_PROCESSOR_THROTTLE_MINIMUM: windows::core::GUID =
 const GUID_PROCESSOR_THROTTLE_MAXIMUM: windows::core::GUID =
     windows::core::GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ec);
 #[cfg(windows)]
+const GUID_PROCESSOR_THROTTLE_MINIMUM_CLASS1: windows::core::GUID =
+    windows::core::GUID::from_u128(0x893dee8e_2bef_41e0_89c6_b55d0929964d);
+#[cfg(windows)]
+const GUID_PROCESSOR_THROTTLE_MAXIMUM_CLASS1: windows::core::GUID =
+    windows::core::GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ed);
+#[cfg(windows)]
 const GUID_PROCESSOR_PERFORMANCE_BOOST_MODE: windows::core::GUID =
     windows::core::GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
 #[cfg(windows)]
 const GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES: windows::core::GUID =
     windows::core::GUID::from_u128(0x0cc5b647_c1df_4637_891a_dec35c318583);
+#[cfg(windows)]
+const GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES_CLASS1: windows::core::GUID =
+    windows::core::GUID::from_u128(0x0cc5b647_c1df_4637_891a_dec35c318584);
 
 #[cfg(windows)]
 fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
@@ -409,6 +532,12 @@ fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
         core_parking_min_cores_percent: read_processor_limit(
             guid,
             &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
+        ),
+        class1_min_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM_CLASS1),
+        class1_max_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM_CLASS1),
+        class1_core_parking_min_cores_percent: read_processor_limit(
+            guid,
+            &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES_CLASS1,
         ),
     })
 }
@@ -455,68 +584,53 @@ fn read_processor_value(guid: &str, setting: &windows::core::GUID, ac: bool) -> 
 }
 
 #[cfg(windows)]
-fn write_plan_processor_settings(
-    guid: &str,
-    recommendation: PlanProcessorRecommendation,
-) -> Result<()> {
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_THROTTLE_MINIMUM,
-        true,
-        recommendation.min_percent,
-    )?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_THROTTLE_MINIMUM,
-        false,
-        recommendation.min_percent,
-    )?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_THROTTLE_MAXIMUM,
-        true,
-        recommendation.max_percent,
-    )?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_THROTTLE_MAXIMUM,
-        false,
-        recommendation.max_percent,
-    )?;
+fn write_plan_processor_settings(guid: &str, min_percent: u32, max_percent: u32) -> Result<()> {
+    write_processor_value(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM, true, min_percent)?;
+    write_processor_value(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM, false, min_percent)?;
+    write_processor_value(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM, true, max_percent)?;
+    write_processor_value(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM, false, max_percent)?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn write_high_performance_settings(
-    guid: &str,
-    recommendation: HighPerformanceRecommendation,
-) -> Result<()> {
-    write_plan_processor_settings(guid, recommendation.processor_limits())?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
-        true,
-        recommendation.boost_mode,
-    )?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
-        false,
-        recommendation.boost_mode,
-    )?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
-        true,
-        recommendation.core_parking_min_cores_percent,
-    )?;
-    write_processor_value(
-        guid,
-        &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
-        false,
-        recommendation.core_parking_min_cores_percent,
-    )?;
+fn write_processor_preset(guid: &str, recommendation: ProcessorPresetRecommendation) -> Result<()> {
+    write_plan_processor_settings(guid, recommendation.min_percent, recommendation.max_percent)?;
+    if let Some(boost_mode) = recommendation.boost_mode {
+        write_processor_value_both(guid, &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE, boost_mode)?;
+    }
+    if let Some(core_parking) = recommendation.core_parking_min_cores_percent {
+        write_processor_value_both(
+            guid,
+            &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
+            core_parking,
+        )?;
+    }
+    if let Some(class1) = recommendation.class1 {
+        write_processor_value_both(
+            guid,
+            &GUID_PROCESSOR_THROTTLE_MINIMUM_CLASS1,
+            class1.min_percent,
+        )?;
+        write_processor_value_both(
+            guid,
+            &GUID_PROCESSOR_THROTTLE_MAXIMUM_CLASS1,
+            class1.max_percent,
+        )?;
+        if let Some(core_parking) = class1.core_parking_min_cores_percent {
+            write_processor_value_both(
+                guid,
+                &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES_CLASS1,
+                core_parking,
+            )?;
+        }
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+fn write_processor_value_both(guid: &str, setting: &windows::core::GUID, value: u32) -> Result<()> {
+    write_processor_value(guid, setting, true, value)?;
+    write_processor_value(guid, setting, false, value)
 }
 
 #[cfg(windows)]
@@ -591,19 +705,95 @@ impl PowerApi for WindowsPowerApi {
     fn read_plan_processor_settings(&self, _guid: &str) -> Result<PlanProcessorSettings> {
         Ok(PlanProcessorSettings::default())
     }
-    fn apply_plan_processor_recommendation(
+    fn apply_processor_preset(
         &self,
         _guid: &str,
-        _recommendation: PlanProcessorRecommendation,
+        _recommendation: ProcessorPresetRecommendation,
     ) -> Result<()> {
         Ok(())
     }
-    fn apply_high_performance_recommendation(
-        &self,
-        _guid: &str,
-        _recommendation: HighPerformanceRecommendation,
-    ) -> Result<()> {
-        Ok(())
+}
+
+#[cfg(test)]
+mod cpu_topology_tests {
+    use super::*;
+
+    fn record(size: usize, information_type: i32, efficiency_class: u8) -> Vec<u8> {
+        let mut record = vec![0_u8; size];
+        record[0..4].copy_from_slice(&(size as u32).to_le_bytes());
+        record[4..8].copy_from_slice(&information_type.to_le_bytes());
+        if information_type == 0 && size > 18 {
+            record[18] = efficiency_class;
+        }
+        record
+    }
+
+    #[test]
+    fn parser_aggregates_sorted_efficiency_classes() {
+        let mut data = record(32, 0, 2);
+        data.extend(record(32, 0, 0));
+        data.extend(record(32, 0, 2));
+
+        assert_eq!(
+            parse_cpu_efficiency_classes(&data).unwrap(),
+            vec![
+                CpuEfficiencyClass {
+                    value: 0,
+                    logical_processors: 1,
+                },
+                CpuEfficiencyClass {
+                    value: 2,
+                    logical_processors: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_uses_each_record_size_and_skips_unknown_types() {
+        let mut data = record(40, 0, 7);
+        data.extend(record(12, 19, 0));
+        data.extend(record(24, 0, 7));
+
+        assert_eq!(
+            parse_cpu_efficiency_classes(&data).unwrap(),
+            vec![CpuEfficiencyClass {
+                value: 7,
+                logical_processors: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn parser_accepts_an_empty_result() {
+        assert!(parse_cpu_efficiency_classes(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parser_rejects_malformed_records() {
+        assert!(parse_cpu_efficiency_classes(&[0; 7]).is_err());
+        let mut invalid_size = vec![0_u8; 8];
+        invalid_size[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        assert!(parse_cpu_efficiency_classes(&invalid_size).is_err());
+        assert!(parse_cpu_efficiency_classes(&record(18, 0, 0)).is_err());
+
+        let mut oversized = record(32, 0, 0);
+        oversized[0..4].copy_from_slice(&64_u32.to_le_bytes());
+        assert!(parse_cpu_efficiency_classes(&oversized).is_err());
+
+        let mut trailing = record(32, 0, 0);
+        trailing.extend([0; 3]);
+        assert!(parse_cpu_efficiency_classes(&trailing).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn live_cpu_topology_query_returns_logical_processors() {
+        let classes = read_cpu_efficiency_classes().unwrap();
+
+        assert!(!classes.is_empty());
+        assert!(classes.iter().all(|class| class.logical_processors > 0));
+        assert!(classes.windows(2).all(|pair| pair[0].value < pair[1].value));
     }
 }
 
@@ -642,6 +832,10 @@ pub mod mock {
                     base_mhz: Some(3500),
                     cores: Some(8),
                     logical_processors: Some(16),
+                    efficiency_classes: vec![CpuEfficiencyClass {
+                        value: 0,
+                        logical_processors: 16,
+                    }],
                 },
                 cpu_frequency: CpuFrequencySample {
                     max_mhz: Some(3500),
@@ -705,50 +899,36 @@ pub mod mock {
                 .copied()
                 .unwrap_or_default())
         }
-        fn apply_plan_processor_recommendation(
+        fn apply_processor_preset(
             &self,
             guid: &str,
-            recommendation: PlanProcessorRecommendation,
+            recommendation: ProcessorPresetRecommendation,
         ) -> Result<()> {
             let mut settings = self.processor_settings.lock().unwrap();
             let entry = settings.entry(guid.to_string()).or_default();
-            entry.min_percent = ProcessorLimit {
-                ac: Some(recommendation.min_percent),
-                dc: Some(recommendation.min_percent),
-            };
-            entry.max_percent = ProcessorLimit {
-                ac: Some(recommendation.max_percent),
-                dc: Some(recommendation.max_percent),
-            };
+            entry.min_percent = present_limit(recommendation.min_percent);
+            entry.max_percent = present_limit(recommendation.max_percent);
+            if let Some(boost_mode) = recommendation.boost_mode {
+                entry.boost_mode = present_limit(boost_mode);
+            }
+            if let Some(core_parking) = recommendation.core_parking_min_cores_percent {
+                entry.core_parking_min_cores_percent = present_limit(core_parking);
+            }
+            if let Some(class1) = recommendation.class1 {
+                entry.class1_min_percent = present_limit(class1.min_percent);
+                entry.class1_max_percent = present_limit(class1.max_percent);
+                if let Some(core_parking) = class1.core_parking_min_cores_percent {
+                    entry.class1_core_parking_min_cores_percent = present_limit(core_parking);
+                }
+            }
             Ok(())
         }
-        fn apply_high_performance_recommendation(
-            &self,
-            guid: &str,
-            recommendation: HighPerformanceRecommendation,
-        ) -> Result<()> {
-            self.processor_settings.lock().unwrap().insert(
-                guid.to_string(),
-                PlanProcessorSettings {
-                    min_percent: ProcessorLimit {
-                        ac: Some(recommendation.min_percent),
-                        dc: Some(recommendation.min_percent),
-                    },
-                    max_percent: ProcessorLimit {
-                        ac: Some(recommendation.max_percent),
-                        dc: Some(recommendation.max_percent),
-                    },
-                    boost_mode: ProcessorLimit {
-                        ac: Some(recommendation.boost_mode),
-                        dc: Some(recommendation.boost_mode),
-                    },
-                    core_parking_min_cores_percent: ProcessorLimit {
-                        ac: Some(recommendation.core_parking_min_cores_percent),
-                        dc: Some(recommendation.core_parking_min_cores_percent),
-                    },
-                },
-            );
-            Ok(())
+    }
+
+    fn present_limit(value: u32) -> ProcessorLimit {
+        ProcessorLimit {
+            ac: Some(value),
+            dc: Some(value),
         }
     }
 
@@ -776,23 +956,6 @@ pub mod mock {
         }
 
         #[test]
-        fn test_mock_apply_recommendation_writes_all_processor_limits() {
-            let api = MockPowerApi::new();
-            api.apply_plan_processor_recommendation(
-                "balanced-guid",
-                PlanProcessorRecommendation::standard_default(),
-            )
-            .unwrap();
-
-            let settings = api.read_plan_processor_settings("balanced-guid").unwrap();
-
-            assert_eq!(settings.min_percent.ac, Some(5));
-            assert_eq!(settings.min_percent.dc, Some(5));
-            assert_eq!(settings.max_percent.ac, Some(99));
-            assert_eq!(settings.max_percent.dc, Some(99));
-        }
-
-        #[test]
         fn test_mock_duplicate_and_delete_ultimate_performance() {
             let api = MockPowerApi::new();
 
@@ -814,16 +977,21 @@ pub mod mock {
         }
 
         #[test]
-        fn test_mock_apply_high_performance_recommendation_writes_advanced_settings() {
+        fn test_mock_apply_processor_preset_writes_advanced_settings() {
             let api = MockPowerApi::new();
-            let recommendation = HighPerformanceRecommendation {
+            let recommendation = ProcessorPresetRecommendation {
                 min_percent: 100,
                 max_percent: 100,
-                boost_mode: 2,
-                core_parking_min_cores_percent: 100,
+                boost_mode: Some(2),
+                core_parking_min_cores_percent: Some(100),
+                class1: Some(crate::types::ProcessorClassRecommendation {
+                    min_percent: 80,
+                    max_percent: 100,
+                    core_parking_min_cores_percent: Some(100),
+                }),
             };
 
-            api.apply_high_performance_recommendation("perf-guid", recommendation)
+            api.apply_processor_preset("perf-guid", recommendation)
                 .unwrap();
             let settings = api.read_plan_processor_settings("perf-guid").unwrap();
 
@@ -833,6 +1001,40 @@ pub mod mock {
             assert_eq!(settings.boost_mode.dc, Some(2));
             assert_eq!(settings.core_parking_min_cores_percent.ac, Some(100));
             assert_eq!(settings.core_parking_min_cores_percent.dc, Some(100));
+            assert_eq!(settings.class1_min_percent.ac, Some(80));
+            assert_eq!(settings.class1_max_percent.dc, Some(100));
+            assert_eq!(settings.class1_core_parking_min_cores_percent.ac, Some(100));
+        }
+
+        #[test]
+        fn test_mock_apply_processor_preset_preserves_omitted_optional_settings() {
+            let api = MockPowerApi::new();
+            api.processor_settings.lock().unwrap().insert(
+                "balanced-guid".into(),
+                PlanProcessorSettings {
+                    boost_mode: present_limit(4),
+                    core_parking_min_cores_percent: present_limit(35),
+                    class1_min_percent: present_limit(11),
+                    ..PlanProcessorSettings::default()
+                },
+            );
+
+            api.apply_processor_preset(
+                "balanced-guid",
+                ProcessorPresetRecommendation {
+                    min_percent: 5,
+                    max_percent: 99,
+                    boost_mode: None,
+                    core_parking_min_cores_percent: None,
+                    class1: None,
+                },
+            )
+            .unwrap();
+
+            let settings = api.read_plan_processor_settings("balanced-guid").unwrap();
+            assert_eq!(settings.boost_mode.ac, Some(4));
+            assert_eq!(settings.core_parking_min_cores_percent.dc, Some(35));
+            assert_eq!(settings.class1_min_percent.ac, Some(11));
         }
     }
 }
