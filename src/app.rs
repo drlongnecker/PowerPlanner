@@ -63,11 +63,9 @@ impl eframe::App for PowerPlannerApp {
                     t.exit_item_id.clone(),
                 )
             });
-            let standard_guid = self.config.general.standard_plan_guid.clone();
-            let perf_guid = self.config.general.performance_plan_guid.clone();
             std::thread::Builder::new()
                 .name("tray-waker".into())
-                .spawn(move || tray_event_thread(ctx2, cmd_tx2, ids, standard_guid, perf_guid))
+                .spawn(move || tray_event_thread(ctx2, cmd_tx2, ids))
                 .ok();
             self.waker_started = true;
         }
@@ -807,8 +805,6 @@ fn tray_event_thread(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
     )>,
-    standard_guid: String,
-    perf_guid: String,
 ) {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -835,9 +831,9 @@ fn tray_event_thread(
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.request_repaint();
                 } else if ev.id == *balanced_id {
-                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(standard_guid.clone())));
+                    let _ = cmd_tx.send(MonitorCommand::ForceConfiguredStandard);
                 } else if ev.id == *perf_id {
-                    let _ = cmd_tx.send(MonitorCommand::ForcePlan(Some(perf_guid.clone())));
+                    let _ = cmd_tx.send(MonitorCommand::ForceConfiguredPerformance);
                 } else if ev.id == *resume_id {
                     let _ = cmd_tx.send(MonitorCommand::ForcePlan(None));
                 } else if ev.id == *exit_id {

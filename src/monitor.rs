@@ -9,7 +9,8 @@ use crate::idle::{IdleReader, WindowsIdleReader};
 use crate::power::PowerApi;
 use crate::types::{
     AppState, CpuFrequencySample, CpuHistoryEnergyEstimate, CpuHistoryPlanKind, CpuHistoryPoint,
-    MonitorCommand, PowerEvent, PowerPlan, RunningProcess,
+    HighPerformanceDiagnostics, HighPerformanceRecommendation, MonitorCommand, PowerEvent,
+    PowerPlan, RunningProcess, UltimatePerformanceSetupState,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{mpsc, Arc, OnceLock, RwLock};
@@ -18,6 +19,93 @@ use sysinfo::System as SysInfo;
 
 const DASHBOARD_CPU_HISTORY_WINDOW: Duration = Duration::from_secs(15 * 60);
 const DASHBOARD_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
+
+fn install_ultimate_performance(
+    power: &dyn PowerApi,
+    state: &mut MonitorState,
+    recommendation: HighPerformanceRecommendation,
+) -> Result<PowerPlan, String> {
+    install_ultimate_performance_with_save(power, state, recommendation, &|config| {
+        crate::config::save(config).map_err(|err| err.to_string())
+    })
+}
+
+fn install_ultimate_performance_with_save(
+    power: &dyn PowerApi,
+    state: &mut MonitorState,
+    recommendation: HighPerformanceRecommendation,
+    save_config: &dyn Fn(&Config) -> Result<(), String>,
+) -> Result<PowerPlan, String> {
+    let existing = crate::config::find_ultimate_performance_plan(&state.available_plans).cloned();
+    let (plan, created) = match existing {
+        Some(plan) => (plan, false),
+        None => (
+            power
+                .duplicate_ultimate_performance()
+                .map_err(|err| format!("Failed to add Ultimate Performance: {err}"))?,
+            true,
+        ),
+    };
+
+    let cleanup = |message: String| {
+        if created {
+            match power.delete_plan(&plan.guid) {
+                Ok(()) => message,
+                Err(err) => format!("{message}. Cleanup also failed: {err}"),
+            }
+        } else {
+            message
+        }
+    };
+
+    if let Err(err) = power.apply_high_performance_recommendation(&plan.guid, recommendation) {
+        return Err(cleanup(format!(
+            "Ultimate Performance was created, but its recommended settings could not be applied: {err}"
+        )));
+    }
+    let settings = power.read_plan_processor_settings(&plan.guid).ok();
+    if HighPerformanceDiagnostics::for_settings(settings.as_ref(), recommendation)
+        != HighPerformanceDiagnostics::Configured
+    {
+        return Err(cleanup(
+            "Ultimate Performance settings could not be verified after writing them".to_string(),
+        ));
+    }
+
+    let previous_guid = state.config.general.performance_plan_guid.clone();
+    state.config.general.performance_plan_guid = plan.guid.clone();
+    if let Err(err) = save_config(&state.config) {
+        state.config.general.performance_plan_guid = previous_guid;
+        return Err(cleanup(format!(
+            "Ultimate Performance was created, but PowerPlanner could not save the selection: {err}"
+        )));
+    }
+
+    if let Err(err) = power.set_active_plan(&plan.guid) {
+        state.config.general.performance_plan_guid = previous_guid;
+        let rollback_error = save_config(&state.config).err();
+        let mut message = format!(
+            "Ultimate Performance was configured, but Windows could not activate it: {err}"
+        );
+        if let Some(rollback_error) = rollback_error {
+            message.push_str(&format!(
+                ". Restoring the previous PowerPlanner selection also failed: {rollback_error}"
+            ));
+        }
+        return Err(cleanup(message));
+    }
+
+    state.available_plans = power.enumerate_plans().unwrap_or_else(|_| {
+        let mut plans = state.available_plans.clone();
+        if !plans.iter().any(|candidate| candidate.guid == plan.guid) {
+            plans.push(plan.clone());
+        }
+        plans
+    });
+    state.current_plan_guid = plan.guid.clone();
+    state.forced_plan_guid = Some(plan.guid.clone());
+    Ok(plan)
+}
 
 #[derive(Debug, Clone)]
 struct CpuSample {
@@ -478,6 +566,15 @@ pub fn run(
     loop {
         // Drain commands before each tick
         while let Ok(cmd) = rx.try_recv() {
+            let cmd = match cmd {
+                MonitorCommand::ForceConfiguredStandard => {
+                    MonitorCommand::ForcePlan(Some(state.config.general.standard_plan_guid.clone()))
+                }
+                MonitorCommand::ForceConfiguredPerformance => MonitorCommand::ForcePlan(Some(
+                    state.config.general.performance_plan_guid.clone(),
+                )),
+                command => command,
+            };
             match cmd {
                 MonitorCommand::Stop => return,
                 MonitorCommand::ForcePlan(Some(guid)) => {
@@ -532,6 +629,46 @@ pub fn run(
                     plan_processor_settings =
                         refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
                 }
+                MonitorCommand::ApplyHighPerformanceRecommendation {
+                    guid,
+                    recommendation,
+                } => {
+                    if let Err(err) =
+                        power.apply_high_performance_recommendation(&guid, recommendation)
+                    {
+                        app_state.write().unwrap().last_error = Some(format!(
+                            "Failed to update high-performance settings: {}",
+                            err
+                        ));
+                    } else if state.current_plan_guid == guid {
+                        let _ = power.set_active_plan(&guid);
+                    }
+                    plan_processor_settings =
+                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
+                }
+                MonitorCommand::InstallUltimatePerformance { recommendation } => {
+                    app_state.write().unwrap().ultimate_performance_setup =
+                        UltimatePerformanceSetupState::Pending;
+                    match install_ultimate_performance(&*power, &mut state, recommendation) {
+                        Ok(plan) => {
+                            plan_processor_settings =
+                                refresh_plan_processor_settings(&*power, &state.config)
+                                    .unwrap_or_default();
+                            let mut shared = app_state.write().unwrap();
+                            shared.available_plans = state.available_plans.clone();
+                            shared.current_plan = Some(plan.clone());
+                            shared.ultimate_performance_setup =
+                                UltimatePerformanceSetupState::Succeeded(plan);
+                            shared.last_error = None;
+                        }
+                        Err(message) => {
+                            let mut shared = app_state.write().unwrap();
+                            shared.ultimate_performance_setup =
+                                UltimatePerformanceSetupState::Failed(message.clone());
+                            shared.last_error = Some(message);
+                        }
+                    }
+                }
                 MonitorCommand::RefreshPlans => {
                     if let Ok(plans) = power.enumerate_plans() {
                         state.available_plans = plans.clone();
@@ -541,6 +678,8 @@ pub fn run(
                     plan_processor_settings =
                         refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
                 }
+                MonitorCommand::ForceConfiguredStandard
+                | MonitorCommand::ForceConfiguredPerformance => unreachable!(),
             }
         }
 
@@ -1316,5 +1455,56 @@ mod tests {
         assert!(second.is_none());
         assert!(third.is_some());
         assert_eq!(s.dashboard_cpu_history.len(), 2);
+    }
+
+    #[test]
+    fn test_install_ultimate_performance_configures_activates_and_selects_plan() {
+        let power = crate::power::mock::MockPowerApi::new();
+        let mut config = test_config();
+        config.general.performance_plan_guid = "perf-guid".into();
+        let plans = power.enumerate_plans().unwrap();
+        let recommendation = config.general.high_performance_recommendation();
+        let mut state = MonitorState::new(config, "balanced-guid".into(), plans);
+
+        let plan =
+            install_ultimate_performance_with_save(&power, &mut state, recommendation, &|_| Ok(()))
+                .unwrap();
+
+        assert_eq!(plan.name, "Ultimate Performance");
+        assert_eq!(state.config.general.performance_plan_guid, plan.guid);
+        assert_eq!(state.current_plan_guid, plan.guid);
+        assert_eq!(state.forced_plan_guid.as_deref(), Some(plan.guid.as_str()));
+        assert_eq!(power.get_active_plan().unwrap().guid, plan.guid);
+        assert_eq!(
+            HighPerformanceDiagnostics::for_settings(
+                Some(&power.read_plan_processor_settings(&plan.guid).unwrap()),
+                recommendation,
+            ),
+            HighPerformanceDiagnostics::Configured
+        );
+    }
+
+    #[test]
+    fn test_install_ultimate_performance_cleans_up_when_config_save_fails() {
+        let power = crate::power::mock::MockPowerApi::new();
+        let mut config = test_config();
+        config.general.performance_plan_guid = "perf-guid".into();
+        let plans = power.enumerate_plans().unwrap();
+        let recommendation = config.general.high_performance_recommendation();
+        let mut state = MonitorState::new(config, "balanced-guid".into(), plans);
+
+        let error =
+            install_ultimate_performance_with_save(&power, &mut state, recommendation, &|_| {
+                Err("disk full".into())
+            })
+            .unwrap_err();
+
+        assert!(error.contains("disk full"));
+        assert_eq!(state.config.general.performance_plan_guid, "perf-guid");
+        assert!(
+            crate::config::find_ultimate_performance_plan(&power.enumerate_plans().unwrap())
+                .is_none()
+        );
+        assert_eq!(power.get_active_plan().unwrap().guid, "balanced-guid");
     }
 }

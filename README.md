@@ -20,6 +20,8 @@ Yep, go for it.  Drag it down, ensure you have [Rust](https://rustup.rs/) and [V
 
 As needed for personal use.
 
-## Do you accept PRs?
+## Support Emberlit
 
-TBD!
+If Emberlit is useful to you, feel free to buy me a cup of life--coffee!
+
+<a href='https://ko-fi.com/W7W7VG6N' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi6.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>

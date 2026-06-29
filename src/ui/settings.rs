@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::types::{
-    AppState, MonitorCommand, PlanDiagnostics, PlanProcessorRecommendation, PlanProcessorSettings,
-    PowerPlan,
+    AppState, HighPerformanceDiagnostics, HighPerformanceRecommendation, MonitorCommand,
+    PlanDiagnostics, PlanProcessorRecommendation, PlanProcessorSettings, PowerPlan,
+    UltimatePerformanceSetupState,
 };
 use crate::ui::design;
 use egui::{self, Align, RichText, Ui};
@@ -9,6 +10,15 @@ use std::sync::mpsc;
 
 const SETTINGS_COMBO_WIDTH: f32 = 230.0;
 const SETTINGS_VALUE_WIDTH: f32 = 132.0;
+const BOOST_MODE_OPTIONS: [(u8, &str); 7] = [
+    (0, "Disabled"),
+    (1, "Enabled"),
+    (2, "Aggressive"),
+    (3, "Efficient Enabled"),
+    (4, "Efficient Aggressive"),
+    (5, "Aggressive at Guaranteed"),
+    (6, "Efficient Aggressive at Guaranteed"),
+];
 const ENERGY_RATE_LINKS: [(&str, &str); 3] = [
     (
         "EnergySage local electricity costs",
@@ -72,6 +82,32 @@ mod tests {
             .iter()
             .any(|(label, _)| label.contains("Intel")));
     }
+
+    #[test]
+    fn boost_mode_options_cover_all_windows_values() {
+        assert_eq!(BOOST_MODE_OPTIONS.len(), 7);
+        assert_eq!(boost_mode_name(0), "Disabled");
+        assert_eq!(boost_mode_name(2), "Aggressive");
+        assert_eq!(boost_mode_name(6), "Efficient Aggressive at Guaranteed");
+        assert_eq!(boost_mode_name(7), "Unknown");
+    }
+
+    #[test]
+    fn ultimate_performance_detection_is_exact_and_case_insensitive() {
+        let plans = vec![
+            PowerPlan {
+                guid: "high".into(),
+                name: "High Performance".into(),
+            },
+            PowerPlan {
+                guid: "ultimate".into(),
+                name: "ultimate performance".into(),
+            },
+        ];
+
+        assert!(has_ultimate_performance(&plans));
+        assert!(!has_ultimate_performance(&plans[..1]));
+    }
 }
 
 pub fn render(
@@ -81,6 +117,13 @@ pub fn render(
     state: &AppState,
 ) {
     let mut changed = false;
+
+    if let UltimatePerformanceSetupState::Succeeded(plan) = &state.ultimate_performance_setup {
+        if config.general.performance_plan_guid != plan.guid {
+            config.general.performance_plan_guid = plan.guid.clone();
+            changed = true;
+        }
+    }
 
     crate::ui::padded_page(ui, |ui| {
         design::page_header(
@@ -169,18 +212,19 @@ pub fn render(
                         config.general.performance_cpu_min_percent;
                     let mut performance_cpu_max_percent =
                         config.general.performance_cpu_max_percent;
-                    let selected_guid = render_plan_tab(
+                    let mut performance_boost_mode = config.general.performance_boost_mode;
+                    let mut performance_core_parking_min_cores_percent =
+                        config.general.performance_core_parking_min_cores_percent;
+                    let selected_guid = render_performance_plan_tab(
                         ui,
                         state,
-                        PlanTab {
-                            title: "High Performance",
-                            description: "Boosted behavior used for watched apps and sustained turbo rescue.",
-                            plan_label: "Plan",
-                            plan_description: "Used when a watched app or turbo rescue is active.",
-                            combo_id: "performance_plan_combo",
-                            guid: config.general.performance_plan_guid.clone(),
-                            recommendation: config.general.performance_recommendation(),
-                        },
+                        tx,
+                        config.general.performance_plan_guid.clone(),
+                        config.general.high_performance_recommendation(),
+                        &mut performance_cpu_min_percent,
+                        &mut performance_cpu_max_percent,
+                        &mut performance_boost_mode,
+                        &mut performance_core_parking_min_cores_percent,
                         &mut changed,
                         |ui, changed| {
                             settings_grid(ui, |ui| {
@@ -203,19 +247,6 @@ pub fn render(
                                 changed,
                             );
                         },
-                        |ui, guid, settings, recommendation, changed| {
-                            processor_limit_controls(
-                                ui,
-                                tx,
-                                guid,
-                                settings,
-                                recommendation,
-                                "Keep both limits at 100% so High Performance releases the governor.",
-                                &mut performance_cpu_min_percent,
-                                &mut performance_cpu_max_percent,
-                                changed,
-                            );
-                        },
                     );
                     if selected_guid != config.general.performance_plan_guid {
                         config.general.performance_plan_guid = selected_guid;
@@ -231,6 +262,17 @@ pub fn render(
                     }
                     if performance_cpu_max_percent != config.general.performance_cpu_max_percent {
                         config.general.performance_cpu_max_percent = performance_cpu_max_percent;
+                        changed = true;
+                    }
+                    if performance_boost_mode != config.general.performance_boost_mode {
+                        config.general.performance_boost_mode = performance_boost_mode;
+                        changed = true;
+                    }
+                    if performance_core_parking_min_cores_percent
+                        != config.general.performance_core_parking_min_cores_percent
+                    {
+                        config.general.performance_core_parking_min_cores_percent =
+                            performance_core_parking_min_cores_percent;
                         changed = true;
                     }
                     if turbo_rescue_enabled != config.general.turbo_rescue_enabled {
@@ -391,6 +433,375 @@ fn render_plan_tab(
         add_processor_recommendation(ui, &plan.guid, settings, plan.recommendation, changed);
     });
     plan.guid
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_performance_plan_tab(
+    ui: &mut Ui,
+    state: &AppState,
+    tx: &mpsc::Sender<MonitorCommand>,
+    mut guid: String,
+    recommendation: HighPerformanceRecommendation,
+    min_percent: &mut u8,
+    max_percent: &mut u8,
+    boost_mode: &mut u8,
+    core_parking_min_cores_percent: &mut u8,
+    changed: &mut bool,
+    add_behavior: impl FnOnce(&mut Ui, &mut bool),
+) -> String {
+    design::section(
+        ui,
+        "High Performance",
+        "Boosted behavior used for watched apps and sustained turbo rescue.",
+        |ui| {
+            settings_grid(ui, |ui| {
+                plan_combo_cell(
+                    ui,
+                    "Plan",
+                    "Used when a watched app or turbo rescue is active.",
+                    &state.available_plans,
+                    &mut guid,
+                    changed,
+                    "performance_plan_combo",
+                );
+                empty_cell(ui);
+                ui.end_row();
+            });
+
+            ultimate_performance_setup_controls(ui, tx, state, recommendation);
+            ui.add_space(design::spacing::SECTION_GAP);
+            add_behavior(ui, changed);
+            ui.add_space(design::spacing::SECTION_GAP);
+            design::subsection_heading(ui, "Processor Performance");
+            ui.add_space(6.0);
+            let settings = state
+                .plan_processor_settings
+                .get(&guid)
+                .and_then(|settings| *settings);
+            high_performance_controls(
+                ui,
+                tx,
+                &guid,
+                settings,
+                recommendation,
+                min_percent,
+                max_percent,
+                boost_mode,
+                core_parking_min_cores_percent,
+                changed,
+            );
+        },
+    );
+    guid
+}
+
+fn has_ultimate_performance(plans: &[PowerPlan]) -> bool {
+    plans
+        .iter()
+        .any(|plan| plan.name.eq_ignore_ascii_case("Ultimate Performance"))
+}
+
+fn ultimate_performance_setup_controls(
+    ui: &mut Ui,
+    tx: &mpsc::Sender<MonitorCommand>,
+    state: &AppState,
+    recommendation: HighPerformanceRecommendation,
+) {
+    let missing = !has_ultimate_performance(&state.available_plans);
+    let show_result = !matches!(
+        state.ultimate_performance_setup,
+        UltimatePerformanceSetupState::Idle
+    );
+    if !missing && !show_result {
+        return;
+    }
+
+    ui.add_space(design::spacing::ROW_GAP);
+    egui::Frame::none()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .rounding(design::radius::CONTROL)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            if missing {
+                ui.label(
+                    RichText::new("Ultimate Performance is not available")
+                        .size(design::type_size::LABEL)
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Ultimate Performance prioritizes responsiveness by reducing power-saving delays. It can use more energy and produce more heat, does not overclock the CPU, and is best used while plugged in.",
+                    )
+                    .weak()
+                    .size(design::type_size::HELP),
+                );
+                ui.add_space(8.0);
+                let pending = matches!(
+                    state.ultimate_performance_setup,
+                    UltimatePerformanceSetupState::Pending
+                );
+                let label = if pending {
+                    "Adding Ultimate Performance..."
+                } else {
+                    "Add Ultimate Performance"
+                };
+                if ui
+                    .add_enabled(!pending, egui::Button::new(label))
+                    .clicked()
+                {
+                    let _ = tx.send(MonitorCommand::InstallUltimatePerformance { recommendation });
+                }
+            }
+
+            match &state.ultimate_performance_setup {
+                UltimatePerformanceSetupState::Idle => {}
+                UltimatePerformanceSetupState::Pending => {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("Windows is adding and configuring the plan.")
+                            .weak()
+                            .size(design::type_size::HELP),
+                    );
+                }
+                UltimatePerformanceSetupState::Succeeded(plan) => {
+                    if missing {
+                        ui.add_space(6.0);
+                    }
+                    ui.label(
+                        RichText::new(format!("{} was added and selected.", plan.name))
+                            .color(design::color::SUCCESS)
+                            .size(design::type_size::HELP),
+                    );
+                }
+                UltimatePerformanceSetupState::Failed(message) => {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(message)
+                            .color(ui.visuals().error_fg_color)
+                            .size(design::type_size::HELP),
+                    );
+                }
+            }
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn high_performance_controls(
+    ui: &mut Ui,
+    tx: &mpsc::Sender<MonitorCommand>,
+    guid: &str,
+    settings: Option<PlanProcessorSettings>,
+    recommendation: HighPerformanceRecommendation,
+    min_percent: &mut u8,
+    max_percent: &mut u8,
+    boost_mode: &mut u8,
+    core_parking_min_cores_percent: &mut u8,
+    changed: &mut bool,
+) {
+    let diagnostic = HighPerformanceDiagnostics::for_settings(settings.as_ref(), recommendation);
+    settings_grid(ui, |ui| {
+        high_performance_recommendation_controls(
+            ui,
+            min_percent,
+            max_percent,
+            boost_mode,
+            core_parking_min_cores_percent,
+            changed,
+        );
+        high_performance_current_configuration(ui, tx, guid, settings, recommendation, diagnostic);
+        ui.end_row();
+    });
+}
+
+fn high_performance_recommendation_controls(
+    ui: &mut Ui,
+    min_percent: &mut u8,
+    max_percent: &mut u8,
+    boost_mode: &mut u8,
+    core_parking_min_cores_percent: &mut u8,
+    changed: &mut bool,
+) {
+    ui.vertical(|ui| {
+        ui.label(
+            RichText::new(
+                "Keep processor capacity available, allow fast boost response, and prevent core parking from adding wake-up latency.",
+            )
+            .weak()
+            .size(design::type_size::HELP),
+        );
+        ui.add_space(design::spacing::ROW_GAP);
+
+        let mut min = *min_percent as u64;
+        numeric_value_cell(
+            ui,
+            "Min Processor State",
+            "Recommended minimum processor state for plugged-in and battery power.",
+            &mut min,
+            0..=100,
+            "%",
+            changed,
+        );
+        ui.add_space(design::spacing::ROW_GAP);
+
+        let mut max = *max_percent as u64;
+        numeric_value_cell(
+            ui,
+            "Max Processor State",
+            "Recommended maximum processor state for plugged-in and battery power.",
+            &mut max,
+            0..=100,
+            "%",
+            changed,
+        );
+        *min_percent = min.min(max) as u8;
+        *max_percent = max.max(min) as u8;
+
+        ui.add_space(design::spacing::ROW_GAP);
+        boost_mode_cell(ui, boost_mode, changed);
+        ui.add_space(design::spacing::ROW_GAP);
+
+        let mut parking = *core_parking_min_cores_percent as u64;
+        numeric_value_cell(
+            ui,
+            "Core Parking Minimum",
+            "Minimum percentage of logical cores Windows keeps available.",
+            &mut parking,
+            0..=100,
+            "%",
+            changed,
+        );
+        *core_parking_min_cores_percent = parking as u8;
+    });
+}
+
+fn boost_mode_cell(ui: &mut Ui, boost_mode: &mut u8, changed: &mut bool) {
+    ui.vertical(|ui| {
+        design::setting_label(
+            ui,
+            "Processor Boost Mode",
+            "Controls how aggressively Windows requests CPU boost frequencies.",
+        );
+        ui.add_space(6.0);
+        let control_width = ui.available_width().min(SETTINGS_COMBO_WIDTH);
+        egui::ComboBox::from_id_source("performance_boost_mode_combo")
+            .selected_text(boost_mode_name(*boost_mode))
+            .width(control_width)
+            .show_ui(ui, |ui| {
+                for (value, label) in BOOST_MODE_OPTIONS {
+                    if ui.selectable_value(boost_mode, value, label).changed() {
+                        *changed = true;
+                    }
+                }
+            });
+    });
+}
+
+fn high_performance_current_configuration(
+    ui: &mut Ui,
+    tx: &mpsc::Sender<MonitorCommand>,
+    guid: &str,
+    settings: Option<PlanProcessorSettings>,
+    recommendation: HighPerformanceRecommendation,
+    diagnostic: HighPerformanceDiagnostics,
+) {
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Current Configuration")
+                    .size(design::type_size::LABEL)
+                    .strong(),
+            );
+            let (label, kind) = match diagnostic {
+                HighPerformanceDiagnostics::Configured => {
+                    ("Configured", design::StatusKind::Success)
+                }
+                HighPerformanceDiagnostics::NeedsReview => {
+                    ("Not Configured", design::StatusKind::Warning)
+                }
+                HighPerformanceDiagnostics::Unavailable => {
+                    ("Unavailable", design::StatusKind::Muted)
+                }
+            };
+            design::compact_status_badge(ui, label, kind);
+        });
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "Processor state, boost behavior, and core parking for plugged-in and battery power.",
+            )
+            .weak()
+            .size(design::type_size::HELP),
+        );
+        ui.add_space(6.0);
+        if let Some(settings) = settings {
+            egui::Grid::new(ui.next_auto_id())
+                .num_columns(3)
+                .spacing([14.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("");
+                    ui.label(
+                        RichText::new("Plugged in")
+                            .weak()
+                            .size(design::type_size::HELP),
+                    );
+                    ui.label(
+                        RichText::new("On battery")
+                            .weak()
+                            .size(design::type_size::HELP),
+                    );
+                    ui.end_row();
+
+                    ui.label("Min");
+                    ui.label(format_limit(settings.min_percent.ac));
+                    ui.label(format_limit(settings.min_percent.dc));
+                    ui.end_row();
+
+                    ui.label("Max");
+                    ui.label(format_limit(settings.max_percent.ac));
+                    ui.label(format_limit(settings.max_percent.dc));
+                    ui.end_row();
+
+                    ui.label("Boost");
+                    ui.label(format_boost_mode(settings.boost_mode.ac));
+                    ui.label(format_boost_mode(settings.boost_mode.dc));
+                    ui.end_row();
+
+                    ui.label("Core parking min");
+                    ui.label(format_limit(settings.core_parking_min_cores_percent.ac));
+                    ui.label(format_limit(settings.core_parking_min_cores_percent.dc));
+                    ui.end_row();
+                });
+            if diagnostic == HighPerformanceDiagnostics::NeedsReview
+                && ui.button("Apply recommended performance preset").clicked()
+            {
+                let _ = tx.send(MonitorCommand::ApplyHighPerformanceRecommendation {
+                    guid: guid.to_string(),
+                    recommendation,
+                });
+            }
+        } else {
+            ui.label(
+                RichText::new("Windows did not return performance settings for this plan.")
+                    .weak()
+                    .size(design::type_size::HELP),
+            );
+        }
+    });
+}
+
+fn boost_mode_name(value: u8) -> &'static str {
+    BOOST_MODE_OPTIONS
+        .iter()
+        .find_map(|(option, label)| (*option == value).then_some(*label))
+        .unwrap_or("Unknown")
+}
+
+fn format_boost_mode(value: Option<u32>) -> String {
+    value
+        .map(|value| boost_mode_name(value as u8).to_string())
+        .unwrap_or_else(|| "n/a".to_string())
 }
 
 fn processor_limit_controls(

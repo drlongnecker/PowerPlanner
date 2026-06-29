@@ -10,7 +10,7 @@ pub struct RunningProcess {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PowerPlan {
     pub guid: String,
     pub name: String,
@@ -40,6 +40,8 @@ pub struct ProcessorLimit {
 pub struct PlanProcessorSettings {
     pub min_percent: ProcessorLimit,
     pub max_percent: ProcessorLimit,
+    pub boost_mode: ProcessorLimit,
+    pub core_parking_min_cores_percent: ProcessorLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,20 @@ impl PlanProcessorRecommendation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighPerformanceRecommendation {
+    pub min_percent: u32,
+    pub max_percent: u32,
+    pub boost_mode: u32,
+    pub core_parking_min_cores_percent: u32,
+}
+
+impl HighPerformanceRecommendation {
+    pub fn processor_limits(self) -> PlanProcessorRecommendation {
+        PlanProcessorRecommendation::new(self.min_percent, self.max_percent)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanDiagnostics {
     Configured,
@@ -108,6 +124,54 @@ impl PlanDiagnostics {
             && settings.min_percent.dc == Some(recommendation.min_percent)
             && settings.max_percent.ac == Some(recommendation.max_percent)
             && settings.max_percent.dc == Some(recommendation.max_percent)
+        {
+            Self::Configured
+        } else {
+            Self::NeedsReview
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighPerformanceDiagnostics {
+    Configured,
+    NeedsReview,
+    Unavailable,
+}
+
+impl HighPerformanceDiagnostics {
+    pub fn for_settings(
+        settings: Option<&PlanProcessorSettings>,
+        recommendation: HighPerformanceRecommendation,
+    ) -> Self {
+        let Some(settings) = settings else {
+            return Self::Unavailable;
+        };
+
+        let values = [
+            settings.min_percent.ac,
+            settings.min_percent.dc,
+            settings.max_percent.ac,
+            settings.max_percent.dc,
+            settings.boost_mode.ac,
+            settings.boost_mode.dc,
+            settings.core_parking_min_cores_percent.ac,
+            settings.core_parking_min_cores_percent.dc,
+        ];
+        if values.iter().any(|value| value.is_none()) {
+            return Self::Unavailable;
+        }
+
+        if settings.min_percent.ac == Some(recommendation.min_percent)
+            && settings.min_percent.dc == Some(recommendation.min_percent)
+            && settings.max_percent.ac == Some(recommendation.max_percent)
+            && settings.max_percent.dc == Some(recommendation.max_percent)
+            && settings.boost_mode.ac == Some(recommendation.boost_mode)
+            && settings.boost_mode.dc == Some(recommendation.boost_mode)
+            && settings.core_parking_min_cores_percent.ac
+                == Some(recommendation.core_parking_min_cores_percent)
+            && settings.core_parking_min_cores_percent.dc
+                == Some(recommendation.core_parking_min_cores_percent)
         {
             Self::Configured
         } else {
@@ -192,14 +256,32 @@ pub struct CpuHistoryEnergyEstimate {
 #[derive(Debug)]
 pub enum MonitorCommand {
     ForcePlan(Option<String>), // Some(guid) = force and lock; None = clear force, resume auto
+    ForceConfiguredStandard,
+    ForceConfiguredPerformance,
     UpdateWatchlist(Vec<String>), // replace watchlist; monitor picks up next tick
     UpdateConfig(crate::config::Config), // replaces full config; monitor picks up next tick
     ApplyPlanProcessorRecommendation {
         guid: String,
         recommendation: PlanProcessorRecommendation,
     },
+    ApplyHighPerformanceRecommendation {
+        guid: String,
+        recommendation: HighPerformanceRecommendation,
+    },
+    InstallUltimatePerformance {
+        recommendation: HighPerformanceRecommendation,
+    },
     RefreshPlans,
     Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum UltimatePerformanceSetupState {
+    #[default]
+    Idle,
+    Pending,
+    Succeeded(PowerPlan),
+    Failed(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -215,6 +297,7 @@ pub struct AppState {
     pub cpu_frequency: CpuFrequencySample,
     pub turbo_rescue_state: String,
     pub plan_processor_settings: std::collections::BTreeMap<String, Option<PlanProcessorSettings>>,
+    pub ultimate_performance_setup: UltimatePerformanceSetupState,
     pub cpu_history: VecDeque<CpuHistoryPoint>,
     pub low_power_ready_input: bool,
     pub low_power_ready_cpu: bool,
@@ -247,6 +330,14 @@ mod tests {
             max_percent: ProcessorLimit {
                 ac: Some(max),
                 dc: Some(max),
+            },
+            boost_mode: ProcessorLimit {
+                ac: Some(2),
+                dc: Some(2),
+            },
+            core_parking_min_cores_percent: ProcessorLimit {
+                ac: Some(100),
+                dc: Some(100),
             },
         }
     }
@@ -284,6 +375,8 @@ mod tests {
                 ac: Some(99),
                 dc: Some(99),
             },
+            boost_mode: ProcessorLimit::default(),
+            core_parking_min_cores_percent: ProcessorLimit::default(),
         };
 
         assert_eq!(
@@ -300,6 +393,35 @@ mod tests {
         assert_eq!(
             PlanDiagnostics::for_settings(None, PlanProcessorRecommendation::standard_default()),
             PlanDiagnostics::Unavailable
+        );
+    }
+
+    #[test]
+    fn high_performance_diagnostics_cover_hidden_processor_settings() {
+        let recommendation = HighPerformanceRecommendation {
+            min_percent: 100,
+            max_percent: 100,
+            boost_mode: 2,
+            core_parking_min_cores_percent: 100,
+        };
+        let configured = settings(100, 100);
+        assert_eq!(
+            HighPerformanceDiagnostics::for_settings(Some(&configured), recommendation),
+            HighPerformanceDiagnostics::Configured
+        );
+
+        let mut needs_review = configured;
+        needs_review.boost_mode.ac = Some(1);
+        assert_eq!(
+            HighPerformanceDiagnostics::for_settings(Some(&needs_review), recommendation),
+            HighPerformanceDiagnostics::NeedsReview
+        );
+
+        let mut unavailable = configured;
+        unavailable.core_parking_min_cores_percent.dc = None;
+        assert_eq!(
+            HighPerformanceDiagnostics::for_settings(Some(&unavailable), recommendation),
+            HighPerformanceDiagnostics::Unavailable
         );
     }
 }

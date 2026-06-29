@@ -1,7 +1,7 @@
 // src/power.rs
 use crate::types::{
-    BatteryStatus, CpuFrequencySample, CpuInfo, PlanProcessorRecommendation, PlanProcessorSettings,
-    PowerPlan, ProcessorLimit,
+    BatteryStatus, CpuFrequencySample, CpuInfo, HighPerformanceRecommendation,
+    PlanProcessorRecommendation, PlanProcessorSettings, PowerPlan, ProcessorLimit,
 };
 use anyhow::{bail, Result};
 #[cfg(windows)]
@@ -9,6 +9,8 @@ use std::sync::{Mutex, OnceLock};
 
 pub trait PowerApi: Send + Sync {
     fn enumerate_plans(&self) -> Result<Vec<PowerPlan>>;
+    fn duplicate_ultimate_performance(&self) -> Result<PowerPlan>;
+    fn delete_plan(&self, guid: &str) -> Result<()>;
     fn get_active_plan(&self) -> Result<PowerPlan>;
     fn set_active_plan(&self, guid: &str) -> Result<()>;
     fn get_battery_status(&self) -> Result<BatteryStatus>;
@@ -19,6 +21,11 @@ pub trait PowerApi: Send + Sync {
         &self,
         guid: &str,
         recommendation: PlanProcessorRecommendation,
+    ) -> Result<()>;
+    fn apply_high_performance_recommendation(
+        &self,
+        guid: &str,
+        recommendation: HighPerformanceRecommendation,
     ) -> Result<()>;
 }
 
@@ -54,6 +61,14 @@ impl PowerApi for WindowsPowerApi {
         let output = powercfg(&["/list"])?;
         let text = String::from_utf8_lossy(&output.stdout);
         Ok(text.lines().filter_map(parse_scheme_line).collect())
+    }
+
+    fn duplicate_ultimate_performance(&self) -> Result<PowerPlan> {
+        duplicate_ultimate_performance()
+    }
+
+    fn delete_plan(&self, guid: &str) -> Result<()> {
+        delete_plan(guid)
     }
 
     fn get_active_plan(&self) -> Result<PowerPlan> {
@@ -128,6 +143,14 @@ impl PowerApi for WindowsPowerApi {
     ) -> Result<()> {
         write_plan_processor_settings(guid, recommendation)
     }
+
+    fn apply_high_performance_recommendation(
+        &self,
+        guid: &str,
+        recommendation: HighPerformanceRecommendation,
+    ) -> Result<()> {
+        write_high_performance_settings(guid, recommendation)
+    }
 }
 
 #[cfg(windows)]
@@ -168,7 +191,51 @@ fn guid_to_string(guid: windows::core::GUID) -> String {
 }
 
 #[cfg(windows)]
+fn duplicate_ultimate_performance() -> Result<PowerPlan> {
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::System::Power::PowerDuplicateScheme;
+    use windows::Win32::System::Registry::HKEY;
+
+    const ULTIMATE_PERFORMANCE_TEMPLATE: windows::core::GUID =
+        windows::core::GUID::from_u128(0xe9a42b02_d5df_448d_aa00_03f14749eb61);
+
+    unsafe {
+        let mut raw: *mut windows::core::GUID = std::ptr::null_mut();
+        let err = PowerDuplicateScheme(HKEY::default(), &ULTIMATE_PERFORMANCE_TEMPLATE, &mut raw);
+        if err.0 != 0 {
+            bail!("PowerDuplicateScheme failed: {}", err.0);
+        }
+        if raw.is_null() {
+            bail!("PowerDuplicateScheme returned no destination GUID");
+        }
+
+        let guid = guid_to_string(*raw);
+        let _ = LocalFree(HLOCAL(raw.cast()));
+        Ok(PowerPlan {
+            guid,
+            name: "Ultimate Performance".to_string(),
+        })
+    }
+}
+
+#[cfg(windows)]
+fn delete_plan(guid: &str) -> Result<()> {
+    use windows::Win32::System::Power::PowerDeleteScheme;
+    use windows::Win32::System::Registry::HKEY;
+
+    let scheme = guid_from_string(guid)?;
+    unsafe {
+        let err = PowerDeleteScheme(HKEY::default(), &scheme);
+        if err.0 != 0 {
+            bail!("PowerDeleteScheme failed: {}", err.0);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn get_active_scheme_guid() -> Result<String> {
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::System::Power::PowerGetActiveScheme;
     use windows::Win32::System::Registry::HKEY;
 
@@ -179,7 +246,7 @@ fn get_active_scheme_guid() -> Result<String> {
             bail!("PowerGetActiveScheme failed: {}", err.0);
         }
         let guid = *raw;
-        windows::Win32::System::Com::CoTaskMemFree(Some(raw.cast()));
+        let _ = LocalFree(HLOCAL(raw.cast()));
         Ok(guid_to_string(guid))
     }
 }
@@ -326,12 +393,23 @@ const GUID_PROCESSOR_THROTTLE_MINIMUM: windows::core::GUID =
 #[cfg(windows)]
 const GUID_PROCESSOR_THROTTLE_MAXIMUM: windows::core::GUID =
     windows::core::GUID::from_u128(0xbc5038f7_23e0_4960_96da_33abaf5935ec);
+#[cfg(windows)]
+const GUID_PROCESSOR_PERFORMANCE_BOOST_MODE: windows::core::GUID =
+    windows::core::GUID::from_u128(0xbe337238_0d82_4146_a960_4f3749d470c7);
+#[cfg(windows)]
+const GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES: windows::core::GUID =
+    windows::core::GUID::from_u128(0x0cc5b647_c1df_4637_891a_dec35c318583);
 
 #[cfg(windows)]
 fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
     Ok(PlanProcessorSettings {
         min_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM),
         max_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM),
+        boost_mode: read_processor_limit(guid, &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE),
+        core_parking_min_cores_percent: read_processor_limit(
+            guid,
+            &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
+        ),
     })
 }
 
@@ -409,6 +487,39 @@ fn write_plan_processor_settings(
 }
 
 #[cfg(windows)]
+fn write_high_performance_settings(
+    guid: &str,
+    recommendation: HighPerformanceRecommendation,
+) -> Result<()> {
+    write_plan_processor_settings(guid, recommendation.processor_limits())?;
+    write_processor_value(
+        guid,
+        &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+        true,
+        recommendation.boost_mode,
+    )?;
+    write_processor_value(
+        guid,
+        &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+        false,
+        recommendation.boost_mode,
+    )?;
+    write_processor_value(
+        guid,
+        &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
+        true,
+        recommendation.core_parking_min_cores_percent,
+    )?;
+    write_processor_value(
+        guid,
+        &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
+        false,
+        recommendation.core_parking_min_cores_percent,
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
 fn write_processor_value(
     guid: &str,
     setting: &windows::core::GUID,
@@ -450,6 +561,15 @@ impl PowerApi for WindowsPowerApi {
     fn enumerate_plans(&self) -> Result<Vec<PowerPlan>> {
         Ok(vec![])
     }
+    fn duplicate_ultimate_performance(&self) -> Result<PowerPlan> {
+        Ok(PowerPlan {
+            guid: "ultimate-performance-stub".into(),
+            name: "Ultimate Performance".into(),
+        })
+    }
+    fn delete_plan(&self, _guid: &str) -> Result<()> {
+        Ok(())
+    }
     fn get_active_plan(&self) -> Result<PowerPlan> {
         Ok(PowerPlan {
             guid: "stub".into(),
@@ -478,6 +598,13 @@ impl PowerApi for WindowsPowerApi {
     ) -> Result<()> {
         Ok(())
     }
+    fn apply_high_performance_recommendation(
+        &self,
+        _guid: &str,
+        _recommendation: HighPerformanceRecommendation,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -486,7 +613,7 @@ pub mod mock {
     use std::sync::Mutex;
 
     pub struct MockPowerApi {
-        pub plans: Vec<PowerPlan>,
+        pub plans: Mutex<Vec<PowerPlan>>,
         pub active_guid: Mutex<String>,
         pub battery: BatteryStatus,
         pub cpu_info: CpuInfo,
@@ -497,7 +624,7 @@ pub mod mock {
     impl MockPowerApi {
         pub fn new() -> Self {
             Self {
-                plans: vec![
+                plans: Mutex::new(vec![
                     PowerPlan {
                         guid: "balanced-guid".into(),
                         name: "Balanced".into(),
@@ -506,7 +633,7 @@ pub mod mock {
                         guid: "perf-guid".into(),
                         name: "High Performance".into(),
                     },
-                ],
+                ]),
                 active_guid: Mutex::new("balanced-guid".into()),
                 battery: BatteryStatus::default(),
                 cpu_info: CpuInfo {
@@ -526,12 +653,27 @@ pub mod mock {
 
     impl PowerApi for MockPowerApi {
         fn enumerate_plans(&self) -> Result<Vec<PowerPlan>> {
-            Ok(self.plans.clone())
+            Ok(self.plans.lock().unwrap().clone())
+        }
+        fn duplicate_ultimate_performance(&self) -> Result<PowerPlan> {
+            let plan = PowerPlan {
+                guid: "ultimate-perf-guid".into(),
+                name: "Ultimate Performance".into(),
+            };
+            self.plans.lock().unwrap().push(plan.clone());
+            Ok(plan)
+        }
+        fn delete_plan(&self, guid: &str) -> Result<()> {
+            self.plans.lock().unwrap().retain(|plan| plan.guid != guid);
+            self.processor_settings.lock().unwrap().remove(guid);
+            Ok(())
         }
         fn get_active_plan(&self) -> Result<PowerPlan> {
             let guid = self.active_guid.lock().unwrap().clone();
             let plan = self
                 .plans
+                .lock()
+                .unwrap()
                 .iter()
                 .find(|p| p.guid == guid)
                 .cloned()
@@ -568,6 +710,23 @@ pub mod mock {
             guid: &str,
             recommendation: PlanProcessorRecommendation,
         ) -> Result<()> {
+            let mut settings = self.processor_settings.lock().unwrap();
+            let entry = settings.entry(guid.to_string()).or_default();
+            entry.min_percent = ProcessorLimit {
+                ac: Some(recommendation.min_percent),
+                dc: Some(recommendation.min_percent),
+            };
+            entry.max_percent = ProcessorLimit {
+                ac: Some(recommendation.max_percent),
+                dc: Some(recommendation.max_percent),
+            };
+            Ok(())
+        }
+        fn apply_high_performance_recommendation(
+            &self,
+            guid: &str,
+            recommendation: HighPerformanceRecommendation,
+        ) -> Result<()> {
             self.processor_settings.lock().unwrap().insert(
                 guid.to_string(),
                 PlanProcessorSettings {
@@ -578,6 +737,14 @@ pub mod mock {
                     max_percent: ProcessorLimit {
                         ac: Some(recommendation.max_percent),
                         dc: Some(recommendation.max_percent),
+                    },
+                    boost_mode: ProcessorLimit {
+                        ac: Some(recommendation.boost_mode),
+                        dc: Some(recommendation.boost_mode),
+                    },
+                    core_parking_min_cores_percent: ProcessorLimit {
+                        ac: Some(recommendation.core_parking_min_cores_percent),
+                        dc: Some(recommendation.core_parking_min_cores_percent),
                     },
                 },
             );
@@ -623,6 +790,49 @@ pub mod mock {
             assert_eq!(settings.min_percent.dc, Some(5));
             assert_eq!(settings.max_percent.ac, Some(99));
             assert_eq!(settings.max_percent.dc, Some(99));
+        }
+
+        #[test]
+        fn test_mock_duplicate_and_delete_ultimate_performance() {
+            let api = MockPowerApi::new();
+
+            let plan = api.duplicate_ultimate_performance().unwrap();
+            assert_eq!(plan.guid, "ultimate-perf-guid");
+            assert_eq!(plan.name, "Ultimate Performance");
+            assert!(api
+                .enumerate_plans()
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate == &plan));
+
+            api.delete_plan(&plan.guid).unwrap();
+            assert!(!api
+                .enumerate_plans()
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate.guid == plan.guid));
+        }
+
+        #[test]
+        fn test_mock_apply_high_performance_recommendation_writes_advanced_settings() {
+            let api = MockPowerApi::new();
+            let recommendation = HighPerformanceRecommendation {
+                min_percent: 100,
+                max_percent: 100,
+                boost_mode: 2,
+                core_parking_min_cores_percent: 100,
+            };
+
+            api.apply_high_performance_recommendation("perf-guid", recommendation)
+                .unwrap();
+            let settings = api.read_plan_processor_settings("perf-guid").unwrap();
+
+            assert_eq!(settings.min_percent.ac, Some(100));
+            assert_eq!(settings.max_percent.dc, Some(100));
+            assert_eq!(settings.boost_mode.ac, Some(2));
+            assert_eq!(settings.boost_mode.dc, Some(2));
+            assert_eq!(settings.core_parking_min_cores_percent.ac, Some(100));
+            assert_eq!(settings.core_parking_min_cores_percent.dc, Some(100));
         }
     }
 }

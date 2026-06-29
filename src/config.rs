@@ -1,7 +1,6 @@
 // src/config.rs
 use crate::energy::{CpuPowerProfile, EnergyRate};
-use crate::types::PlanProcessorRecommendation;
-use crate::types::PowerPlan;
+use crate::types::{HighPerformanceRecommendation, PlanProcessorRecommendation, PowerPlan};
 use anyhow::Result as AnyResult;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -125,6 +124,10 @@ pub struct GeneralConfig {
     pub performance_cpu_min_percent: u8,
     #[serde(default = "default_performance_cpu_max_percent")]
     pub performance_cpu_max_percent: u8,
+    #[serde(default = "default_performance_boost_mode")]
+    pub performance_boost_mode: u8,
+    #[serde(default = "default_performance_core_parking_min_cores_percent")]
+    pub performance_core_parking_min_cores_percent: u8,
     #[serde(default = "default_low_power_cpu_min_percent")]
     pub low_power_cpu_min_percent: u8,
     #[serde(default = "default_low_power_cpu_max_percent")]
@@ -190,6 +193,12 @@ fn default_performance_cpu_min_percent() -> u8 {
 }
 fn default_performance_cpu_max_percent() -> u8 {
     PlanProcessorRecommendation::performance_default().max_percent as u8
+}
+fn default_performance_boost_mode() -> u8 {
+    2
+}
+fn default_performance_core_parking_min_cores_percent() -> u8 {
+    100
 }
 fn default_low_power_cpu_min_percent() -> u8 {
     PlanProcessorRecommendation::low_power_default().min_percent as u8
@@ -285,6 +294,9 @@ impl Default for Config {
                 standard_cpu_max_percent: default_standard_cpu_max_percent(),
                 performance_cpu_min_percent: default_performance_cpu_min_percent(),
                 performance_cpu_max_percent: default_performance_cpu_max_percent(),
+                performance_boost_mode: default_performance_boost_mode(),
+                performance_core_parking_min_cores_percent:
+                    default_performance_core_parking_min_cores_percent(),
                 low_power_cpu_min_percent: default_low_power_cpu_min_percent(),
                 low_power_cpu_max_percent: default_low_power_cpu_max_percent(),
                 idle_wait_seconds: default_idle_wait_seconds(),
@@ -392,9 +404,13 @@ mod tests {
             PlanProcessorRecommendation::standard_default()
         );
         assert_eq!(
-            c.general.performance_recommendation(),
+            c.general
+                .high_performance_recommendation()
+                .processor_limits(),
             PlanProcessorRecommendation::performance_default()
         );
+        assert_eq!(c.general.performance_boost_mode, 2);
+        assert_eq!(c.general.performance_core_parking_min_cores_percent, 100);
         assert_eq!(
             c.general.low_power_recommendation(),
             PlanProcessorRecommendation::low_power_default()
@@ -670,6 +686,45 @@ processes = []
     }
 
     #[test]
+    fn test_initialize_plan_selection_prefers_ultimate_performance() {
+        let plans = vec![
+            plan("balanced-guid", "Balanced"),
+            plan("perf-guid", "High Performance"),
+            plan("ultimate-guid", "Ultimate Performance"),
+        ];
+        let active = plan("balanced-guid", "Balanced");
+        let mut c = Config::default();
+
+        initialize_plan_selection(&mut c, &plans, Some(&active), true);
+
+        assert_eq!(c.general.performance_plan_guid, "ultimate-guid");
+        assert_eq!(
+            find_ultimate_performance_plan(&plans).map(|plan| plan.guid.as_str()),
+            Some("ultimate-guid")
+        );
+    }
+
+    #[test]
+    fn test_legacy_config_defaults_advanced_performance_recommendations() {
+        let c = Config::default();
+        let mut value = toml::Value::try_from(&c).unwrap();
+        let general = value
+            .get_mut("general")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap();
+        general.remove("performance_boost_mode");
+        general.remove("performance_core_parking_min_cores_percent");
+
+        let loaded: Config = value.try_into().unwrap();
+
+        assert_eq!(loaded.general.performance_boost_mode, 2);
+        assert_eq!(
+            loaded.general.performance_core_parking_min_cores_percent,
+            100
+        );
+    }
+
+    #[test]
     fn test_initialize_plan_selection_preserves_valid_saved_guids() {
         let plans = vec![
             plan("balanced-guid", "Balanced"),
@@ -691,10 +746,10 @@ processes = []
 }
 
 fn discover_plan_guid_by_name(plans: &[PowerPlan], candidates: &[&str]) -> Option<String> {
-    plans
+    candidates
         .iter()
-        .find(|plan| {
-            candidates.iter().any(|candidate| {
+        .find_map(|candidate| {
+            plans.iter().find(|plan| {
                 plan.name.eq_ignore_ascii_case(candidate)
                     || plan
                         .name
@@ -703,6 +758,12 @@ fn discover_plan_guid_by_name(plans: &[PowerPlan], candidates: &[&str]) -> Optio
             })
         })
         .map(|plan| plan.guid.clone())
+}
+
+pub fn find_ultimate_performance_plan(plans: &[PowerPlan]) -> Option<&PowerPlan> {
+    plans
+        .iter()
+        .find(|plan| plan.name.eq_ignore_ascii_case("Ultimate Performance"))
 }
 
 fn default_available_guid(available_plans: &[PowerPlan]) -> String {
@@ -733,7 +794,7 @@ pub fn initialize_plan_selection(
         discover_plan_guid_by_name(available_plans, &["power saver", "power save"]);
     let discovered_performance = discover_plan_guid_by_name(
         available_plans,
-        &["high performance", "ultimate performance"],
+        &["ultimate performance", "high performance"],
     );
 
     if is_first_run {
@@ -770,11 +831,13 @@ impl GeneralConfig {
         )
     }
 
-    pub fn performance_recommendation(&self) -> PlanProcessorRecommendation {
-        PlanProcessorRecommendation::new(
-            self.performance_cpu_min_percent as u32,
-            self.performance_cpu_max_percent as u32,
-        )
+    pub fn high_performance_recommendation(&self) -> HighPerformanceRecommendation {
+        HighPerformanceRecommendation {
+            min_percent: self.performance_cpu_min_percent as u32,
+            max_percent: self.performance_cpu_max_percent as u32,
+            boost_mode: self.performance_boost_mode as u32,
+            core_parking_min_cores_percent: self.performance_core_parking_min_cores_percent as u32,
+        }
     }
 
     pub fn low_power_recommendation(&self) -> PlanProcessorRecommendation {
