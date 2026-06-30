@@ -199,7 +199,7 @@ fn default_standard_cpu_max_percent() -> u8 {
     99
 }
 fn default_standard_boost_mode() -> u8 {
-    0
+    1
 }
 fn default_standard_core_parking_min_cores_percent() -> Option<u8> {
     None
@@ -440,7 +440,7 @@ mod tests {
         );
         assert_eq!(c.general.performance_boost_mode, 2);
         assert_eq!(c.general.performance_core_parking_min_cores_percent, 100);
-        assert_eq!(c.general.standard_boost_mode, 0);
+        assert_eq!(c.general.standard_boost_mode, 1);
         assert_eq!(c.general.standard_core_parking_min_cores_percent, None);
         assert_eq!(c.general.low_power_boost_mode, 0);
         assert_eq!(c.general.low_power_core_parking_min_cores_percent, Some(0));
@@ -759,7 +759,7 @@ processes = []
             loaded.general.performance_core_parking_min_cores_percent,
             100
         );
-        assert_eq!(loaded.general.standard_boost_mode, 0);
+        assert_eq!(loaded.general.standard_boost_mode, 1);
         assert_eq!(loaded.general.standard_core_parking_min_cores_percent, None);
         assert_eq!(loaded.general.low_power_boost_mode, 0);
         assert_eq!(

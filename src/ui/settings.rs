@@ -123,7 +123,7 @@ fn preset_label(
         ProcessorPresetKind::Standard
             if recommendation.min_percent == 5
                 && recommendation.max_percent == 99
-                && recommendation.boost_mode == Some(0)
+                && recommendation.boost_mode == Some(1)
                 && recommendation.core_parking_min_cores_percent.is_none() =>
         {
             "Efficiency preset"
