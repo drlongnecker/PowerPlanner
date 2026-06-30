@@ -195,6 +195,7 @@ impl ProcessorPresetDiagnostics {
 pub struct BatteryStatus {
     pub on_battery: bool,
     pub percent: Option<u8>, // None = desktop (no battery)
+    #[allow(dead_code)]
     pub charging: bool,
 }
 

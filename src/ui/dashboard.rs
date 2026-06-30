@@ -9,13 +9,9 @@ use std::sync::mpsc;
 const CPU_GRAPH_HEIGHT: f32 = 300.0;
 const CPU_GRAPH_Y_MAX: f32 = 100.0;
 const CPU_GATE_COLOR: Color32 = design::color::DANGER;
-const TOP_TILE_HEIGHT: f32 = 280.0;
-
-#[derive(Clone, Copy)]
-enum DashboardTileWidth {
-    Half,
-    Full,
-}
+const NOW_BAND_WIDE_THRESHOLD: f32 = 860.0;
+const CONFIG_PANEL_WIDE_THRESHOLD: f32 = 760.0;
+const CHARTS_WIDE_THRESHOLD: f32 = 760.0;
 
 #[cfg(test)]
 mod tests {
@@ -147,104 +143,35 @@ pub fn render(
     config: &mut Config,
     tx: &mpsc::Sender<MonitorCommand>,
 ) {
-    let plan_name = state
-        .current_plan
-        .as_ref()
-        .map(|p| p.name.as_str())
-        .unwrap_or("Unknown");
     let (usage_history, plan_time_history) = load_dashboard_histories(config);
     let mut dashboard_preferences_changed = false;
     let mut usage_window_minutes = config.general.usage_trend_window_minutes;
     let mut plan_time_range_mode = config.general.plan_time_range_mode;
 
     crate::ui::padded_page(ui, |ui| {
-        let top_row_width = ui.available_width();
-        let top_tile_width = tile_width_for_available(top_row_width, DashboardTileWidth::Half);
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            show_dashboard_tile(
-                ui,
-                "Overview",
-                top_tile_width,
-                Some(TOP_TILE_HEIGHT),
-                |_| {},
-                |ui| {
-                    render_overview_tile(ui, state, config, tx, plan_name);
-                },
-            );
-            ui.add_space(design::spacing::SECTION_GAP);
-            show_dashboard_tile(
-                ui,
-                "Current State",
-                top_tile_width,
-                Some(TOP_TILE_HEIGHT),
-                |_| {},
-                |ui| {
-                    render_current_state_tile(ui, state, config);
-                },
-            );
-        });
+        let total_width = ui.available_width();
+        let content_width = total_width.min(1480.0);
+        let margin = (total_width - content_width) / 2.0;
 
-        ui.add_space(design::spacing::SECTION_GAP);
-        let row_width = ui.available_width();
-        let tile_width = tile_width_for_available(row_width, DashboardTileWidth::Half);
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let usage_window_label = usage_window_minutes;
-            dashboard_tile(
-                ui,
-                "Usage Trend",
-                DashboardTileWidth::Half,
-                |ui| {
-                    usage_trend_window_selector(
-                        ui,
-                        &mut usage_window_minutes,
-                        &mut dashboard_preferences_changed,
-                    )
-                },
-                |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "CPU average over the last {} minutes",
-                            usage_window_label
-                        ))
-                        .weak()
-                        .size(design::type_size::HELP),
-                    );
-                    ui.add_space(8.0);
-                    render_cpu_history_chart(ui, &usage_history, config);
-                },
-            );
+        if margin > 0.0 {
+            ui.horizontal_top(|ui| {
+                ui.add_space(margin);
+                ui.vertical(|ui| {
+                    ui.set_max_width(content_width);
+                    render_now_band(ui, state, config);
+                    ui.add_space(design::spacing::SECTION_GAP);
+                    render_configuration_panel(ui, state, config);
+                    ui.add_space(design::spacing::SECTION_GAP);
+                    render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
+                });
+            });
+        } else {
+            render_now_band(ui, state, config);
             ui.add_space(design::spacing::SECTION_GAP);
-            ui.allocate_ui_with_layout(
-                egui::vec2(tile_width, 0.0),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    let plan_time_subtitle_text = plan_time_subtitle(plan_time_range_mode);
-                    dashboard_tile(
-                        ui,
-                        "Plan Time",
-                        DashboardTileWidth::Full,
-                        |ui| {
-                            plan_time_range_selector(
-                                ui,
-                                &mut plan_time_range_mode,
-                                &mut dashboard_preferences_changed,
-                            )
-                        },
-                        |ui| {
-                            ui.label(
-                                RichText::new(plan_time_subtitle_text)
-                                    .weak()
-                                    .size(design::type_size::HELP),
-                            );
-                            ui.add_space(8.0);
-                            render_plan_time_timeline(ui, &plan_time_history);
-                        },
-                    );
-                },
-            );
-        });
+            render_configuration_panel(ui, state, config);
+            ui.add_space(design::spacing::SECTION_GAP);
+            render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
+        }
     });
 
     if dashboard_preferences_changed {
@@ -334,251 +261,273 @@ fn plan_time_range_selector(
         });
 }
 
-fn dashboard_tile(
+fn render_chart_row(
     ui: &mut Ui,
-    title: &str,
-    width: DashboardTileWidth,
-    add_actions: impl FnOnce(&mut Ui),
-    add_contents: impl FnOnce(&mut Ui),
+    usage_history: &[CpuHistoryPoint],
+    plan_time_history: &[CpuHistoryPoint],
+    config: &Config,
+    usage_window_minutes: &mut u64,
+    plan_time_range_mode: &mut PlanTimeRangeMode,
+    dashboard_preferences_changed: &mut bool,
 ) {
-    let tile_width = tile_width_for_available(ui.available_width(), width);
-    show_dashboard_tile(ui, title, tile_width, None, add_actions, add_contents);
+    let charts_width = ui.available_width();
+    if charts_width >= CHARTS_WIDE_THRESHOLD {
+        let tile_width = (charts_width - design::spacing::SECTION_GAP) / 2.0;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.allocate_ui_with_layout(
+                egui::vec2(tile_width, 0.0),
+                Layout::top_down(Align::Min),
+                |ui| render_usage_trend_tile(ui, usage_history, config, usage_window_minutes, dashboard_preferences_changed),
+            );
+            ui.add_space(design::spacing::SECTION_GAP);
+            ui.allocate_ui_with_layout(
+                egui::vec2(tile_width, 0.0),
+                Layout::top_down(Align::Min),
+                |ui| render_plan_time_tile(ui, plan_time_history, plan_time_range_mode, dashboard_preferences_changed),
+            );
+        });
+    } else {
+        render_usage_trend_tile(ui, usage_history, config, usage_window_minutes, dashboard_preferences_changed);
+        ui.add_space(design::spacing::SECTION_GAP);
+        render_plan_time_tile(ui, plan_time_history, plan_time_range_mode, dashboard_preferences_changed);
+    }
 }
 
-fn show_dashboard_tile(
+fn render_usage_trend_tile(
     ui: &mut Ui,
-    title: &str,
-    tile_width: f32,
-    tile_height: Option<f32>,
-    add_actions: impl FnOnce(&mut Ui),
-    add_contents: impl FnOnce(&mut Ui),
+    usage_history: &[CpuHistoryPoint],
+    config: &Config,
+    usage_window_minutes: &mut u64,
+    changed: &mut bool,
 ) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(tile_width, tile_height.unwrap_or(0.0)),
-        Layout::top_down(Align::Min),
+    let usage_window_label = *usage_window_minutes;
+    design::section_with_header_action(
+        ui,
+        "Usage Trend",
+        "",
         |ui| {
-            egui::Frame::none()
-                .fill(ui.visuals().faint_bg_color)
-                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .rounding(design::radius::SECTION)
-                .inner_margin(egui::Margin::symmetric(
-                    design::spacing::SECTION_PAD_X,
-                    design::spacing::SECTION_PAD_Y,
+            usage_trend_window_selector(ui, usage_window_minutes, changed);
+        },
+        |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "CPU average over the last {} minutes",
+                    usage_window_label
                 ))
-                .show(ui, |ui| {
-                    ui.set_width(tile_width - design::spacing::SECTION_PAD_X * 2.0);
-                    if let Some(tile_height) = tile_height {
-                        ui.set_min_height(tile_height - design::spacing::SECTION_PAD_Y * 2.0);
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(title)
-                                .size(design::type_size::SECTION_TITLE)
-                                .strong(),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            add_actions(ui);
-                        });
-                    });
-                    ui.add_space(design::spacing::ROW_GAP);
-                    add_contents(ui);
-                });
+                .weak()
+                .size(design::type_size::HELP),
+            );
+            ui.add_space(8.0);
+            render_cpu_history_chart(ui, usage_history, config);
         },
     );
 }
 
-fn tile_width_for_available(available: f32, width: DashboardTileWidth) -> f32 {
-    match width {
-        DashboardTileWidth::Full => available,
-        DashboardTileWidth::Half => ((available - design::spacing::SECTION_GAP).max(200.0)) / 2.0,
-    }
-}
-
-fn summary_row(ui: &mut Ui, label: &str, value: &str) {
-    ui.label(RichText::new(label).weak().size(design::type_size::STATUS));
-    ui.label(value);
-    ui.end_row();
-}
-
-fn render_overview_tile(
+fn render_plan_time_tile(
     ui: &mut Ui,
-    state: &AppState,
-    config: &Config,
-    tx: &mpsc::Sender<MonitorCommand>,
-    plan_name: &str,
+    plan_time_history: &[CpuHistoryPoint],
+    plan_time_range_mode: &mut PlanTimeRangeMode,
+    changed: &mut bool,
 ) {
-    if let Some(ref forced) = state.forced_plan {
+    let subtitle = plan_time_subtitle(*plan_time_range_mode);
+    design::section_with_header_action(
+        ui,
+        "Plan Time",
+        "",
+        |ui| {
+            plan_time_range_selector(ui, plan_time_range_mode, changed);
+        },
+        |ui| {
+            ui.label(
+                RichText::new(subtitle)
+                    .weak()
+                    .size(design::type_size::HELP),
+            );
+            ui.add_space(8.0);
+            render_plan_time_timeline(ui, plan_time_history);
+        },
+    );
+}
+
+
+fn now_metric(ui: &mut Ui, label: &str, value: &str, sub: &str, accent: bool) {
+    ui.vertical(|ui| {
+        ui.label(
+            RichText::new(label.to_uppercase())
+                .size(design::type_size::KICKER)
+                .weak(),
+        );
+        let color = if accent {
+            design::color::ACCENT
+        } else {
+            ui.visuals().text_color()
+        };
+        ui.label(
+            RichText::new(value)
+                .size(design::type_size::METRIC_VALUE)
+                .monospace()
+                .color(color),
+        );
+        ui.label(RichText::new(sub).size(design::type_size::HELP).monospace().weak());
+    });
+}
+
+fn now_band_left_block(
+    ui: &mut Ui,
+    plan_name: &str,
+    hold_remaining_secs: Option<f32>,
+) {
+    ui.label(
+        RichText::new("ACTIVE PLAN")
+            .size(design::type_size::KICKER)
+            .weak(),
+    );
+    ui.add_space(4.0);
+    design::plan_badge(ui, plan_name);
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        design::compact_status_badge(ui, "Monitor running", design::StatusKind::Success);
+        if let Some(r) = hold_remaining_secs.filter(|r| *r > 0.0) {
+            ui.add_space(4.0);
+            design::compact_status_badge(
+                ui,
+                &format!("Turbo rescue \u{00b7} holding \u{00b7} {:.0}s", r),
+                design::StatusKind::Warning,
+            );
+        }
+    });
+}
+
+fn now_band_metrics(
+    ui: &mut Ui,
+    speed_value: &str,
+    base_sub: &str,
+    is_boosted: bool,
+    cpu_avg_label: &str,
+    cpu_avg_value: &str,
+    cpu_avg_sub: &str,
+    idle_value: &str,
+) {
+    ui.spacing_mut().item_spacing.x = 24.0;
+    now_metric(ui, "Current Speed", speed_value, base_sub, is_boosted);
+    now_metric(ui, cpu_avg_label, cpu_avg_value, cpu_avg_sub, false);
+    now_metric(ui, "Idle", idle_value, "resets on input", false);
+}
+
+fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
+    design::section(ui, "Now", "", |ui| {
+        let content_width = ui.available_width();
+        let wide = content_width >= NOW_BAND_WIDE_THRESHOLD;
+
+        let plan_name = state
+            .current_plan
+            .as_ref()
+            .map(|p| p.name.as_str())
+            .unwrap_or("Unknown");
+
+        let is_boosted = match (
+            state.cpu_frequency.max_mhz,
+            state.cpu_info.as_ref().and_then(|c| c.base_mhz),
+        ) {
+            (Some(max), Some(base)) => max > base,
+            _ => false,
+        };
+        let speed_value = state
+            .cpu_frequency
+            .max_mhz
+            .map(format_mhz)
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        let base_sub = state
+            .cpu_info
+            .as_ref()
+            .and_then(|c| c.base_mhz)
+            .map(|b| {
+                if is_boosted {
+                    format!("\u{25b2} base {}", format_mhz(b))
+                } else {
+                    format!("base {}", format_mhz(b))
+                }
+            })
+            .unwrap_or_default();
+        let cpu_avg_value = state
+            .cpu_average_percent
+            .map(|v| format!("{:.1}%", v))
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        let cpu_avg_sub = format!(
+            "trigger {}%",
+            config.general.cpu_average_threshold_percent
+        );
+        let idle_value = state
+            .idle_for_secs
+            .map(|v| format!("{:.0}s / {}s", v, config.general.idle_wait_seconds))
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        let cpu_avg_window_label = format!(
+            "CPU Average \u{00b7} {}s",
+            config.general.cpu_average_window_seconds
+        );
+
+        if wide {
+            ui.horizontal_top(|ui| {
+                // min 210px floor; proportional to ~20% of content width at wider sizes
+                let left_width = 210.0_f32.max(content_width * 0.20);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_width, 0.0),
+                    Layout::top_down(Align::Min),
+                    |ui| now_band_left_block(ui, plan_name, state.hold_remaining_secs),
+                );
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(16.0);
+                ui.horizontal_top(|ui| {
+                    now_band_metrics(
+                        ui,
+                        &speed_value,
+                        &base_sub,
+                        is_boosted,
+                        &cpu_avg_window_label,
+                        &cpu_avg_value,
+                        &cpu_avg_sub,
+                        &idle_value,
+                    );
+                });
+            });
+        } else {
+            now_band_left_block(ui, plan_name, state.hold_remaining_secs);
+            ui.add_space(12.0);
+            ui.horizontal_top(|ui| {
+                now_band_metrics(
+                    ui,
+                    &speed_value,
+                    &base_sub,
+                    is_boosted,
+                    &cpu_avg_window_label,
+                    &cpu_avg_value,
+                    &cpu_avg_sub,
+                    &idle_value,
+                );
+            });
+        }
+
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.colored_label(egui::Color32::YELLOW, format!("Forced: {}", forced.name));
-            if ui.button("Resume Auto").clicked() {
-                let _ = tx.send(MonitorCommand::ForcePlan(None));
-            }
-        });
-        ui.add_space(6.0);
-    }
-
-    if let Some(ref err) = state.last_error {
-        ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-        ui.add_space(6.0);
-    }
-
-    egui::Grid::new("dashboard_overview_grid")
-        .num_columns(2)
-        .spacing([18.0, 10.0])
-        .min_col_width(140.0)
-        .show(ui, |ui| {
-            summary_row(ui, "Current Plan", plan_name);
-            summary_row(ui, "Monitor", monitor_status_text(state));
-            summary_row(
-                ui,
-                "Idle Wait",
-                &format!("{}s", config.general.idle_wait_seconds),
+            ui.label(
+                RichText::new("Low Power Gates")
+                    .size(design::type_size::HELP)
+                    .weak(),
             );
-            summary_row(
-                ui,
-                "CPU Avg Window",
-                &format!("{}s", config.general.cpu_average_window_seconds),
-            );
-            summary_row(
-                ui,
-                "Turbo Rescue",
-                if config.general.turbo_rescue_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-            );
-            summary_row(
-                ui,
-                "Turbo Trigger",
-                &format!(
-                    ">{}%, {}s above base",
-                    config.general.turbo_rescue_cpu_threshold_percent,
-                    config.general.turbo_rescue_window_seconds
-                ),
-            );
-
-            if !state.matched_processes.is_empty() {
-                summary_row(ui, "Active Triggers", &state.matched_processes.join(", "));
-            }
-
-            if let Some(r) = state.hold_remaining_secs.filter(|r| *r > 0.0) {
-                summary_row(ui, "Hold Timer", &format!("{:.0}s remaining", r));
-            }
-        });
-}
-
-fn render_current_state_tile(ui: &mut Ui, state: &AppState, config: &Config) {
-    egui::Grid::new("dashboard_current_state_grid")
-        .num_columns(2)
-        .spacing([18.0, 10.0])
-        .min_col_width(140.0)
-        .show(ui, |ui| {
-            summary_row(ui, "Power Source", power_source_text(state).as_str());
-
-            if let Some(idle_for_secs) = state.idle_for_secs {
-                summary_row(
-                    ui,
-                    "Idle",
-                    &format!(
-                        "{:.0}s / {}s",
-                        idle_for_secs, config.general.idle_wait_seconds
-                    ),
-                );
-            }
-
-            if let Some(cpu_info) = &state.cpu_info {
-                let cpu_name = if cpu_info.brand.is_empty() {
-                    "Unknown CPU"
-                } else {
-                    cpu_info.brand.as_str()
-                };
-                summary_row(ui, "CPU", cpu_name);
-                summary_row(
-                    ui,
-                    "Base Speed",
-                    &cpu_info
-                        .base_mhz
-                        .map(format_mhz)
-                        .unwrap_or_else(|| "Unavailable".to_string()),
-                );
-            } else {
-                summary_row(ui, "CPU", "Unavailable");
-            }
-
-            summary_row(
-                ui,
-                "Current CPU Speed",
-                &state
-                    .cpu_frequency
-                    .max_mhz
-                    .map(format_mhz)
-                    .unwrap_or_else(|| "Unavailable".to_string()),
-            );
-
-            let cpu_text = if let Some(cpu_average_percent) = state.cpu_average_percent {
-                format!(
-                    "{:.1}% / {}%",
-                    cpu_average_percent, config.general.cpu_average_threshold_percent
-                )
-            } else {
-                format!(
-                    "Gathering samples ({}s window)",
-                    config.general.cpu_average_window_seconds
-                )
-            };
-            summary_row(
-                ui,
-                &format!(
-                    "CPU Average ({}s)",
-                    config.general.cpu_average_window_seconds
-                ),
-                &cpu_text,
-            );
-            summary_row(ui, "Turbo Rescue State", &state.turbo_rescue_state);
-
-            summary_row(
-                ui,
-                "Low Power Gates",
-                &format!(
-                    "input={}  cpu={}",
-                    if state.low_power_ready_input {
-                        "ready"
-                    } else {
-                        "waiting"
-                    },
-                    if state.low_power_ready_cpu {
-                        "ready"
-                    } else {
-                        "waiting"
-                    }
-                ),
+            ui.add_space(12.0);
+            let input_str = if state.low_power_ready_input { "ready" } else { "waiting" };
+            let cpu_str = if state.low_power_ready_cpu { "ready" } else { "waiting" };
+            ui.label(
+                RichText::new(format!("input={}  cpu={}", input_str, cpu_str))
+                    .size(design::type_size::STATUS)
+                    .monospace(),
             );
         });
-}
-
-fn power_source_text(state: &AppState) -> String {
-    let bat = &state.battery;
-    if bat.percent.is_none() {
-        "Desktop (no battery)".to_string()
-    } else if bat.on_battery {
-        let pct = bat.percent.unwrap_or(0);
-        format!(
-            "On Battery - {}%{}",
-            pct,
-            if bat.charging { " (charging)" } else { "" }
-        )
-    } else {
-        "AC Connected".to_string()
-    }
-}
-
-fn monitor_status_text(state: &AppState) -> &'static str {
-    if state.monitor_running {
-        "Running"
-    } else {
-        "Stopped"
-    }
+    });
 }
 
 fn format_mhz(mhz: u32) -> String {
@@ -587,6 +536,120 @@ fn format_mhz(mhz: u32) -> String {
     } else {
         format!("{} MHz", mhz)
     }
+}
+
+fn def_row(ui: &mut Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(132.0, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.label(
+                    RichText::new(label)
+                        .size(design::type_size::LABEL)
+                        .weak(),
+                );
+            },
+        );
+        ui.label(
+            RichText::new(value)
+                .size(design::type_size::LABEL)
+                .monospace(),
+        );
+    });
+    ui.add_space(2.0);
+}
+
+fn def_row_pill(ui: &mut Ui, label: &str, enabled: bool) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(132.0, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.label(
+                    RichText::new(label)
+                        .size(design::type_size::LABEL)
+                        .weak(),
+                );
+            },
+        );
+        if enabled {
+            design::compact_status_badge(ui, "Enabled", design::StatusKind::Success);
+        } else {
+            design::compact_status_badge(ui, "Disabled", design::StatusKind::Muted);
+        }
+    });
+    ui.add_space(2.0);
+}
+
+fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
+    design::section(ui, "Configuration", "The rules the monitor is running by.", |ui| {
+        let content_width = ui.available_width();
+        let two_col = content_width >= CONFIG_PANEL_WIDE_THRESHOLD;
+
+        let power_source = match state.battery.percent {
+            None => "Desktop (no battery)".to_string(),
+            Some(pct) if state.battery.on_battery => format!("Battery ({}%)", pct),
+            Some(pct) => format!("AC ({}% battery)", pct),
+        };
+
+        let processor = state
+            .cpu_info
+            .as_ref()
+            .map(|c| {
+                let base = c.base_mhz.map(format_mhz).unwrap_or_default();
+                if base.is_empty() {
+                    c.brand.clone()
+                } else {
+                    format!("{} @ {}", c.brand, base)
+                }
+            })
+            .unwrap_or_else(|| "Unavailable".to_string());
+
+        let base_speed = state
+            .cpu_info
+            .as_ref()
+            .and_then(|c| c.base_mhz)
+            .map(format_mhz)
+            .unwrap_or_else(|| "Unavailable".to_string());
+
+        let idle_wait = format!("{}s", config.general.idle_wait_seconds);
+        let cpu_window = format!("{}s", config.general.cpu_average_window_seconds);
+        // Show trigger params even when turbo rescue is disabled — so the user can see
+        // what the threshold would be if they enable it.
+        let turbo_trigger = format!(
+            ">{}%  \u{00b7}  {}s above base",
+            config.general.turbo_rescue_cpu_threshold_percent,
+            config.general.turbo_rescue_window_seconds
+        );
+        let turbo_enabled = config.general.turbo_rescue_enabled;
+
+        if two_col {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_min_width(content_width / 2.0 - 12.0);
+                    def_row(ui, "Power Source", &power_source);
+                    def_row(ui, "Processor", &processor);
+                    def_row(ui, "Base Speed", &base_speed);
+                });
+                ui.add_space(24.0);
+                ui.vertical(|ui| {
+                    def_row(ui, "Idle Wait", &idle_wait);
+                    def_row(ui, "CPU Avg Window", &cpu_window);
+                    def_row_pill(ui, "Turbo Rescue", turbo_enabled);
+                    def_row(ui, "Turbo Trigger", &turbo_trigger);
+                });
+            });
+        } else {
+            def_row(ui, "Power Source", &power_source);
+            def_row(ui, "Processor", &processor);
+            def_row(ui, "Base Speed", &base_speed);
+            def_row(ui, "Idle Wait", &idle_wait);
+            def_row(ui, "CPU Avg Window", &cpu_window);
+            def_row_pill(ui, "Turbo Rescue", turbo_enabled);
+            def_row(ui, "Turbo Trigger", &turbo_trigger);
+        }
+    });
 }
 
 fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &Config) {
