@@ -7,6 +7,8 @@ pub mod type_size {
     pub const HELP: f32 = 12.5;
     pub const STATUS: f32 = 13.0;
     pub const NAV: f32 = 14.0;
+    pub const METRIC_VALUE: f32 = 28.0;
+    pub const KICKER: f32 = 10.5;
 }
 
 pub mod spacing {
@@ -316,6 +318,28 @@ pub fn icon_button(ui: &mut Ui, label: &str, tooltip: &str, accent: Color32) -> 
     )
     .rounding(radius::PILL);
     ui.add_sized([28.0, 28.0], button).on_hover_text(tooltip)
+}
+
+pub fn plan_badge(ui: &mut Ui, plan_name: &str) {
+    let lower = plan_name.to_lowercase();
+    let color = if lower.contains("ultimate") || lower.contains("performance") {
+        color::ACCENT
+    } else if lower.contains("power saver") || lower.contains("low power") {
+        color::SUCCESS
+    } else {
+        color::WARNING
+    };
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 4.0, color);
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(plan_name)
+                .size(type_size::LABEL)
+                .strong()
+                .color(color),
+        );
+    });
 }
 
 fn draw_checkmark(ui: &Ui, center: egui::Pos2) {
