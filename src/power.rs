@@ -522,6 +522,12 @@ const GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES: windows::core::GUID =
 #[cfg(windows)]
 const GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES_CLASS1: windows::core::GUID =
     windows::core::GUID::from_u128(0x0cc5b647_c1df_4637_891a_dec35c318584);
+#[cfg(windows)]
+const GUID_PROCESSOR_LATENCY_HINT_PERF: windows::core::GUID =
+    windows::core::GUID::from_u128(0x619b7505_003b_4e82_b7a6_4dd29c300971);
+#[cfg(windows)]
+const GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD: windows::core::GUID =
+    windows::core::GUID::from_u128(0x7b224883_b3cc_4d79_819f_8374152cbe7c);
 
 #[cfg(windows)]
 fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
@@ -532,6 +538,11 @@ fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
         core_parking_min_cores_percent: read_processor_limit(
             guid,
             &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
+        ),
+        latency_hint_perf: read_processor_limit(guid, &GUID_PROCESSOR_LATENCY_HINT_PERF),
+        idle_promote_threshold: read_processor_limit(
+            guid,
+            &GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD,
         ),
         class1_min_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM_CLASS1),
         class1_max_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM_CLASS1),
@@ -603,6 +614,16 @@ fn write_processor_preset(guid: &str, recommendation: ProcessorPresetRecommendat
             guid,
             &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
             core_parking,
+        )?;
+    }
+    if let Some(latency_hint_perf) = recommendation.latency_hint_perf {
+        write_processor_value_both(guid, &GUID_PROCESSOR_LATENCY_HINT_PERF, latency_hint_perf)?;
+    }
+    if let Some(idle_promote) = recommendation.idle_promote_threshold {
+        write_processor_value_both(
+            guid,
+            &GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD,
+            idle_promote,
         )?;
     }
     if let Some(class1) = recommendation.class1 {
@@ -914,6 +935,12 @@ pub mod mock {
             if let Some(core_parking) = recommendation.core_parking_min_cores_percent {
                 entry.core_parking_min_cores_percent = present_limit(core_parking);
             }
+            if let Some(latency_hint_perf) = recommendation.latency_hint_perf {
+                entry.latency_hint_perf = present_limit(latency_hint_perf);
+            }
+            if let Some(idle_promote) = recommendation.idle_promote_threshold {
+                entry.idle_promote_threshold = present_limit(idle_promote);
+            }
             if let Some(class1) = recommendation.class1 {
                 entry.class1_min_percent = present_limit(class1.min_percent);
                 entry.class1_max_percent = present_limit(class1.max_percent);
@@ -984,6 +1011,8 @@ pub mod mock {
                 max_percent: 100,
                 boost_mode: Some(2),
                 core_parking_min_cores_percent: Some(100),
+                latency_hint_perf: None,
+                idle_promote_threshold: None,
                 class1: Some(crate::types::ProcessorClassRecommendation {
                     min_percent: 80,
                     max_percent: 100,
@@ -1026,6 +1055,8 @@ pub mod mock {
                     max_percent: 99,
                     boost_mode: None,
                     core_parking_min_cores_percent: None,
+                    latency_hint_perf: None,
+                    idle_promote_threshold: None,
                     class1: None,
                 },
             )

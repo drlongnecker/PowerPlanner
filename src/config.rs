@@ -910,13 +910,17 @@ impl GeneralConfig {
         &self,
         topology: CpuTopologyKind,
     ) -> ProcessorPresetRecommendation {
-        processor_preset(
-            self.performance_cpu_min_percent,
-            self.performance_cpu_max_percent,
-            Some(self.performance_boost_mode),
-            Some(self.performance_core_parking_min_cores_percent),
-            topology,
-        )
+        ProcessorPresetRecommendation {
+            latency_hint_perf: Some(100),
+            idle_promote_threshold: Some(0),
+            ..processor_preset(
+                self.performance_cpu_min_percent,
+                self.performance_cpu_max_percent,
+                Some(self.performance_boost_mode),
+                Some(self.performance_core_parking_min_cores_percent),
+                topology,
+            )
+        }
     }
 
     pub fn low_power_processor_preset(
@@ -972,6 +976,8 @@ fn processor_preset(
         max_percent: max_percent as u32,
         boost_mode: boost_mode.map(u32::from),
         core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
+        latency_hint_perf: None,
+        idle_promote_threshold: None,
         class1: (topology == CpuTopologyKind::Hybrid).then_some(ProcessorClassRecommendation {
             min_percent: min_percent as u32,
             max_percent: max_percent as u32,

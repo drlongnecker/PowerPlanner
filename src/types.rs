@@ -66,6 +66,8 @@ pub struct PlanProcessorSettings {
     pub max_percent: ProcessorLimit,
     pub boost_mode: ProcessorLimit,
     pub core_parking_min_cores_percent: ProcessorLimit,
+    pub latency_hint_perf: ProcessorLimit,
+    pub idle_promote_threshold: ProcessorLimit,
     pub class1_min_percent: ProcessorLimit,
     pub class1_max_percent: ProcessorLimit,
     pub class1_core_parking_min_cores_percent: ProcessorLimit,
@@ -84,6 +86,8 @@ pub struct ProcessorPresetRecommendation {
     pub max_percent: u32,
     pub boost_mode: Option<u32>,
     pub core_parking_min_cores_percent: Option<u32>,
+    pub latency_hint_perf: Option<u32>,
+    pub idle_promote_threshold: Option<u32>,
     pub class1: Option<ProcessorClassRecommendation>,
 }
 
@@ -116,6 +120,15 @@ impl ProcessorPresetDiagnostics {
             values.extend([
                 settings.core_parking_min_cores_percent.ac,
                 settings.core_parking_min_cores_percent.dc,
+            ]);
+        }
+        if recommendation.latency_hint_perf.is_some() {
+            values.extend([settings.latency_hint_perf.ac, settings.latency_hint_perf.dc]);
+        }
+        if recommendation.idle_promote_threshold.is_some() {
+            values.extend([
+                settings.idle_promote_threshold.ac,
+                settings.idle_promote_threshold.dc,
             ]);
         }
         if let Some(class1) = recommendation.class1 {
@@ -152,6 +165,14 @@ impl ProcessorPresetDiagnostics {
                     settings.core_parking_min_cores_percent.ac == Some(value)
                         && settings.core_parking_min_cores_percent.dc == Some(value)
                 })
+            && recommendation.latency_hint_perf.is_none_or(|value| {
+                settings.latency_hint_perf.ac == Some(value)
+                    && settings.latency_hint_perf.dc == Some(value)
+            })
+            && recommendation.idle_promote_threshold.is_none_or(|value| {
+                settings.idle_promote_threshold.ac == Some(value)
+                    && settings.idle_promote_threshold.dc == Some(value)
+            })
             && recommendation.class1.is_none_or(|class1| {
                 settings.class1_min_percent.ac == Some(class1.min_percent)
                     && settings.class1_min_percent.dc == Some(class1.min_percent)
@@ -325,6 +346,8 @@ mod tests {
                 ac: Some(100),
                 dc: Some(100),
             },
+            latency_hint_perf: ProcessorLimit::default(),
+            idle_promote_threshold: ProcessorLimit::default(),
             class1_min_percent: ProcessorLimit::default(),
             class1_max_percent: ProcessorLimit::default(),
             class1_core_parking_min_cores_percent: ProcessorLimit::default(),
@@ -338,6 +361,8 @@ mod tests {
             max_percent: 100,
             boost_mode: Some(2),
             core_parking_min_cores_percent: Some(100),
+            latency_hint_perf: None,
+            idle_promote_threshold: None,
             class1: None,
         };
         let configured = settings(100, 100);
@@ -405,6 +430,8 @@ mod tests {
             max_percent: 99,
             boost_mode: Some(0),
             core_parking_min_cores_percent: None,
+            latency_hint_perf: None,
+            idle_promote_threshold: None,
             class1: Some(ProcessorClassRecommendation {
                 min_percent: 5,
                 max_percent: 99,
