@@ -327,14 +327,15 @@ pub fn plan_badge(ui: &mut Ui, plan_name: &str) {
     } else if lower.contains("power saver") || lower.contains("low power") {
         color::SUCCESS
     } else {
-        color::WARNING
+        // Balanced and unknown plans are neutral — not a warning state
+        ui.visuals().text_color()
     };
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 4.0, color);
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new(plan_name)
+            RichText::new(plan_name)
                 .size(type_size::LABEL)
                 .strong()
                 .color(color),
