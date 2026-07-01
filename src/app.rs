@@ -6,7 +6,7 @@ use eframe::egui;
 use egui::{Align, Layout};
 use std::sync::{mpsc, Arc, RwLock};
 
-const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
+const WATERMARK_PNG: &[u8] = include_bytes!("../assets/logo-mark-mono.png");
 
 pub struct PowerPlannerApp {
     pub state: Arc<RwLock<AppState>>,
@@ -89,7 +89,7 @@ impl eframe::App for PowerPlannerApp {
         }
 
         if self.bg_texture.is_none() {
-            if let Ok(img) = image::load_from_memory(LOGO_PNG) {
+            if let Ok(img) = image::load_from_memory(WATERMARK_PNG) {
                 let rgba = img.into_rgba8();
                 let (w, h) = rgba.dimensions();
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
@@ -117,7 +117,7 @@ impl eframe::App for PowerPlannerApp {
         }
 
         egui::SidePanel::left("nav").show(ctx, |ui| {
-            ui.heading("PowerPlanner");
+            design::wordmark(ui);
             ui.separator();
             ui.add_space(4.0);
             if design::nav_item(
@@ -377,46 +377,37 @@ fn draw_appearance_icon(
     mode: AppearanceMode,
     color: egui::Color32,
 ) {
-    let stroke = egui::Stroke::new(1.5, color);
+    let scale = rect.width() / 24.0;
+    let stroke = egui::Stroke::new(1.5 * scale, color);
+    let pt = |x: f32, y: f32| design::svg_point(rect, x, y);
     match mode {
         AppearanceMode::System => {
-            let screen =
-                egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 3.0), egui::vec2(14.0, 10.0));
-            painter.rect_stroke(screen, 2.0, stroke);
-            painter.line_segment(
-                [
-                    egui::pos2(rect.center().x, screen.bottom()),
-                    egui::pos2(rect.center().x, rect.bottom() - 2.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(rect.center().x - 4.0, rect.bottom() - 2.0),
-                    egui::pos2(rect.center().x + 4.0, rect.bottom() - 2.0),
-                ],
-                stroke,
-            );
+            let screen = egui::Rect::from_min_size(pt(4.0, 5.0), egui::vec2(16.0, 11.0) * scale);
+            painter.rect_stroke(screen, 2.0 * scale, stroke);
+            painter.line_segment([pt(12.0, 16.0), pt(12.0, 20.0)], stroke);
+            painter.line_segment([pt(8.0, 20.0), pt(16.0, 20.0)], stroke);
+            painter.circle_filled(pt(12.0, 10.5), 2.4 * scale, color);
         }
         AppearanceMode::Light => {
-            painter.circle_stroke(rect.center(), 4.3, stroke);
-            for angle in [0.0_f32, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0] {
-                let radians = angle.to_radians();
-                let direction = egui::vec2(radians.cos(), radians.sin());
-                painter.line_segment(
-                    [
-                        rect.center() + direction * 6.6,
-                        rect.center() + direction * 8.3,
-                    ],
-                    stroke,
-                );
+            painter.circle_stroke(pt(12.0, 12.0), 4.3 * scale, stroke);
+            for (from, to) in [
+                ((12.0, 3.0), (12.0, 5.0)),
+                ((12.0, 19.0), (12.0, 21.0)),
+                ((3.0, 12.0), (5.0, 12.0)),
+                ((19.0, 12.0), (21.0, 12.0)),
+                ((5.6, 5.6), (7.0, 7.0)),
+                ((17.0, 17.0), (18.4, 18.4)),
+                ((18.4, 5.6), (17.0, 7.0)),
+                ((7.0, 17.0), (5.6, 18.4)),
+            ] {
+                painter.line_segment([pt(from.0, from.1), pt(to.0, to.1)], stroke);
             }
         }
         AppearanceMode::Dark => {
-            painter.circle_filled(rect.center(), 7.0, color);
+            painter.circle_filled(rect.center(), 8.0 * scale, color);
             painter.circle_filled(
-                rect.center() + egui::vec2(3.0, -2.0),
-                7.0,
+                rect.center() + egui::vec2(3.5, -2.5) * scale,
+                6.2 * scale,
                 painter.ctx().style().visuals.panel_fill,
             );
         }

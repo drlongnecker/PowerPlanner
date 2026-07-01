@@ -8,6 +8,7 @@ pub mod type_size {
     pub const NAV: f32 = 14.0;
     pub const METRIC_VALUE: f32 = 28.0;
     pub const KICKER: f32 = 10.5;
+    pub const HEADING: f32 = 26.0;
 }
 
 pub mod spacing {
@@ -181,6 +182,15 @@ pub fn subsection_heading(ui: &mut Ui, title: &str) {
     ui.label(RichText::new(title).size(type_size::LABEL).strong());
 }
 
+/// Sidebar wordmark: "Power" light + "Planner" strong, per the brand lockup.
+pub fn wordmark(ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(RichText::new("Power").size(type_size::HEADING));
+        ui.label(RichText::new("Planner").size(type_size::HEADING).strong());
+    });
+}
+
 pub fn tabs<T: Copy + PartialEq>(ui: &mut Ui, selected: &mut T, labels: &[(T, &str)]) {
     ui.horizontal(|ui| {
         for (value, label) in labels {
@@ -331,89 +341,66 @@ fn draw_checkmark(ui: &Ui, center: egui::Pos2) {
     );
 }
 
+/// Maps a coordinate from the design system's 24x24 SVG icon viewBox onto `rect`.
+pub(crate) fn svg_point(rect: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
+    rect.min + egui::vec2(x, y) * (rect.width() / 24.0)
+}
+
 fn draw_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: Color32) {
-    let stroke = Stroke::new(1.5, color);
+    let scale = rect.width() / 24.0;
+    let stroke = Stroke::new(1.5 * scale, color);
+    let pt = |x: f32, y: f32| svg_point(rect, x, y);
     match icon {
         NavIcon::Dashboard => {
-            let gap = 2.0;
-            let tile = (rect.width() - gap) / 2.0;
-            for row in 0..2 {
-                for col in 0..2 {
-                    let min =
-                        rect.min + egui::vec2(col as f32 * (tile + gap), row as f32 * (tile + gap));
-                    painter.rect_stroke(
-                        egui::Rect::from_min_size(min, egui::vec2(tile, tile)),
-                        2.0,
-                        stroke,
-                    );
-                }
-            }
-        }
-        NavIcon::Apps => {
-            let body = egui::Rect::from_min_size(
-                rect.min + egui::vec2(2.0, 5.0),
-                egui::vec2(rect.width() - 4.0, rect.height() - 7.0),
-            );
-            painter.rect_stroke(body, 2.0, stroke);
-            painter.line_segment(
-                [
-                    egui::pos2(body.left() + 4.0, body.top()),
-                    egui::pos2(body.left() + 6.0, rect.top() + 2.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(body.right() - 4.0, body.top()),
-                    egui::pos2(body.right() - 6.0, rect.top() + 2.0),
-                ],
-                stroke,
-            );
-        }
-        NavIcon::Power => {
-            let bolt = [
-                rect.left_top() + egui::vec2(10.0, 1.5),
-                rect.left_top() + egui::vec2(4.5, 9.5),
-                rect.left_top() + egui::vec2(9.0, 9.5),
-                rect.left_top() + egui::vec2(7.0, 16.5),
-                rect.left_top() + egui::vec2(14.0, 7.5),
-                rect.left_top() + egui::vec2(9.5, 7.5),
-                rect.left_top() + egui::vec2(10.0, 1.5),
-            ];
-            painter.add(egui::Shape::line(bolt.to_vec(), stroke));
-        }
-        NavIcon::Settings => {
-            painter.circle_stroke(rect.center(), 5.4, stroke);
-            painter.circle_stroke(rect.center(), 1.8, stroke);
-            for angle in [0.0_f32, 60.0, 120.0, 180.0, 240.0, 300.0] {
-                let radians = angle.to_radians();
-                let direction = egui::vec2(radians.cos(), radians.sin());
-                painter.line_segment(
-                    [
-                        rect.center() + direction * 7.0,
-                        rect.center() + direction * 8.8,
-                    ],
+            let tile = 7.5 * scale;
+            let rx = 2.0 * scale;
+            for (x, y) in [(3.0, 3.0), (13.5, 3.0), (3.0, 13.5), (13.5, 13.5)] {
+                painter.rect_stroke(
+                    egui::Rect::from_min_size(pt(x, y), egui::vec2(tile, tile)),
+                    rx,
                     stroke,
                 );
             }
         }
+        NavIcon::Apps => {
+            let body = egui::Rect::from_min_size(pt(3.0, 7.0), egui::vec2(18.0, 13.0) * scale);
+            painter.rect_stroke(body, 2.0 * scale, stroke);
+            painter.line_segment([pt(9.0, 7.0), pt(10.5, 3.5)], stroke);
+            painter.line_segment([pt(15.0, 7.0), pt(13.5, 3.5)], stroke);
+        }
+        NavIcon::Power => {
+            let bolt = [
+                pt(14.0, 2.0),
+                pt(6.0, 13.0),
+                pt(11.0, 13.0),
+                pt(9.5, 22.0),
+                pt(18.0, 10.0),
+                pt(13.0, 10.0),
+                pt(14.0, 2.0),
+            ];
+            painter.add(egui::Shape::line(bolt.to_vec(), stroke));
+        }
+        NavIcon::Settings => {
+            painter.circle_stroke(pt(12.0, 12.0), 5.4 * scale, stroke);
+            painter.circle_stroke(pt(12.0, 12.0), 1.8 * scale, stroke);
+            for (from, to) in [
+                ((12.0, 4.0), (12.0, 6.2)),
+                ((12.0, 17.8), (12.0, 20.0)),
+                ((4.0, 12.0), (6.2, 12.0)),
+                ((17.8, 12.0), (20.0, 12.0)),
+                ((6.3, 6.3), (7.9, 7.9)),
+                ((16.1, 16.1), (17.7, 17.7)),
+                ((17.7, 6.3), (16.1, 7.9)),
+                ((7.9, 16.1), (6.3, 17.7)),
+            ] {
+                painter.line_segment([pt(from.0, from.1), pt(to.0, to.1)], stroke);
+            }
+        }
         NavIcon::History => {
-            painter.circle_stroke(rect.center(), 7.0, stroke);
-            painter.line_segment(
-                [rect.center(), rect.center() + egui::vec2(0.0, -4.2)],
-                stroke,
-            );
-            painter.line_segment(
-                [rect.center(), rect.center() + egui::vec2(4.0, 2.6)],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    rect.left_top() + egui::vec2(1.5, 5.8),
-                    rect.left_top() + egui::vec2(4.7, 3.4),
-                ],
-                stroke,
-            );
+            painter.circle_stroke(pt(12.0, 12.0), 7.0 * scale, stroke);
+            painter.line_segment([pt(12.0, 12.0), pt(12.0, 7.8)], stroke);
+            painter.line_segment([pt(12.0, 12.0), pt(16.0, 14.6)], stroke);
+            painter.line_segment([pt(3.5, 9.8), pt(6.7, 7.4)], stroke);
         }
     }
 }
