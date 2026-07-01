@@ -1,0 +1,22 @@
+<svg width="320" height="80" viewBox="0 0 320 80" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PowerPlanner">
+  <defs>
+    <linearGradient id="lkTile" x1="8" y1="12" x2="8" y2="68" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1B212B"></stop>
+      <stop offset="1" stop-color="#101620"></stop>
+    </linearGradient>
+    <linearGradient id="lkBolt" x1="28" y1="18" x2="52" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#27D3CE"></stop>
+      <stop offset="1" stop-color="#00A9A5"></stop>
+    </linearGradient>
+  </defs>
+
+  
+  <rect x="8" y="12" width="56" height="56" rx="13" fill="url(#lkTile)" stroke="#323B49" stroke-width="1"></rect>
+  <path d="M19 52 L28 49 L33.5 51 L40 43 L46.5 46 L55.5 39" fill="none" stroke="#3A4456" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M38.5 20 L26 39 H33.8 L30.8 56 L46 34 H37.4 L41.7 20 Z" fill="url(#lkBolt)" stroke="#0C1118" stroke-width="0.8" stroke-linejoin="round"></path>
+
+  
+  <text x="80" y="48" font-family="Ubuntu, &#39;Segoe UI&#39;, sans-serif" font-size="27" letter-spacing="-0.2">
+    <tspan fill="#E6EBF2" font-weight="300">Power</tspan><tspan fill="#E6EBF2" font-weight="700">Planner</tspan>
+  </text>
+</svg>

@@ -16,16 +16,10 @@ pub fn render(
     config: &mut Config,
 ) {
     crate::ui::padded_page(ui, |ui| {
-        design::page_header(
+        design::section(
             ui,
             "Watched Apps",
             "Processes here trigger High Performance mode when running.",
-        );
-
-        design::section(
-            ui,
-            "Watch List",
-            "Add executables by name or browse for an installed app.",
             |ui| {
                 ui.horizontal_top(|ui| {
                     let id = ui.make_persistent_id("add_proc_input");
@@ -121,7 +115,9 @@ pub fn render(
                 let path_width =
                     (ui.available_width() - ACTION_COLUMN_WIDTH - NAME_COLUMN_WIDTH - 28.0)
                         .max(160.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_source("running_now_scroll")
+                    .show(ui, |ui| {
                     TableBuilder::new(ui)
                         .striped(true)
                         .column(Column::exact(ACTION_COLUMN_WIDTH))
@@ -151,7 +147,8 @@ pub fn render(
                                             egui::Label::new(
                                                 egui::RichText::new(path_text)
                                                     .weak()
-                                                    .size(design::type_size::HELP),
+                                                    .size(design::type_size::HELP)
+                                                    .monospace(),
                                             )
                                             .truncate(),
                                         );

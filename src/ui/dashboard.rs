@@ -6,7 +6,7 @@ use egui::{self, Align, Align2, Color32, Layout, Mesh, Pos2, RichText, Sense, Sh
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
-const CPU_GRAPH_HEIGHT: f32 = 300.0;
+const CPU_GRAPH_HEIGHT: f32 = 220.0;
 const CPU_GRAPH_Y_MAX: f32 = 100.0;
 const CPU_GATE_COLOR: Color32 = design::color::DANGER;
 const NOW_BAND_WIDE_THRESHOLD: f32 = 860.0;
@@ -149,29 +149,33 @@ pub fn render(
     let mut plan_time_range_mode = config.general.plan_time_range_mode;
 
     crate::ui::padded_page(ui, |ui| {
-        let total_width = ui.available_width();
-        let content_width = total_width.min(1480.0);
-        let margin = (total_width - content_width) / 2.0;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let total_width = ui.available_width();
+                let content_width = total_width.min(1480.0);
+                let margin = (total_width - content_width) / 2.0;
 
-        if margin > 0.0 {
-            ui.horizontal_top(|ui| {
-                ui.add_space(margin);
-                ui.vertical(|ui| {
-                    ui.set_max_width(content_width);
+                if margin > 0.0 {
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(margin);
+                        ui.vertical(|ui| {
+                            ui.set_max_width(content_width);
+                            render_now_band(ui, state, config);
+                            ui.add_space(design::spacing::SECTION_GAP);
+                            render_configuration_panel(ui, state, config);
+                            ui.add_space(design::spacing::SECTION_GAP);
+                            render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
+                        });
+                    });
+                } else {
                     render_now_band(ui, state, config);
                     ui.add_space(design::spacing::SECTION_GAP);
                     render_configuration_panel(ui, state, config);
                     ui.add_space(design::spacing::SECTION_GAP);
                     render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
-                });
+                }
             });
-        } else {
-            render_now_band(ui, state, config);
-            ui.add_space(design::spacing::SECTION_GAP);
-            render_configuration_panel(ui, state, config);
-            ui.add_space(design::spacing::SECTION_GAP);
-            render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
-        }
     });
 
     if dashboard_preferences_changed {
@@ -376,6 +380,7 @@ fn now_metric(ui: &mut Ui, label: &str, value: &str, sub: &str, accent: bool) {
 fn now_band_left_block(
     ui: &mut Ui,
     plan_name: &str,
+    turbo_rescue_enabled: bool,
     hold_remaining_secs: Option<f32>,
 ) {
     ui.label(
@@ -384,17 +389,21 @@ fn now_band_left_block(
             .weak(),
     );
     ui.add_space(4.0);
-    design::plan_badge(ui, plan_name);
+    design::plan_pill(ui, plan_name);
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
-        design::compact_status_badge(ui, "Monitor running", design::StatusKind::Success);
+        design::compact_status_badge(ui, "Monitoring", design::StatusKind::Success);
+        //ui.add_space(4.0);
         if let Some(r) = hold_remaining_secs.filter(|r| *r > 0.0) {
-            ui.add_space(4.0);
             design::compact_status_badge(
                 ui,
                 &format!("Turbo rescue \u{00b7} holding \u{00b7} {:.0}s", r),
                 design::StatusKind::Warning,
             );
+        } else if turbo_rescue_enabled {
+            design::compact_status_badge(ui, "Turbo rescue", design::StatusKind::Success);
+        } else {
+            design::compact_status_badge(ui, "Turbo rescue", design::StatusKind::Muted);
         }
     });
 }
@@ -430,7 +439,7 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
             state.cpu_frequency.max_mhz,
             state.cpu_info.as_ref().and_then(|c| c.base_mhz),
         ) {
-            (Some(max), Some(base)) => max > base,
+            (Some(max), Some(base)) => max > base + 10,
             _ => false,
         };
         let speed_value = state
@@ -474,10 +483,14 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                 ui.allocate_ui_with_layout(
                     egui::vec2(left_width, 0.0),
                     Layout::top_down(Align::Min),
-                    |ui| now_band_left_block(ui, plan_name, state.hold_remaining_secs),
+                    |ui| now_band_left_block(ui, plan_name, config.general.turbo_rescue_enabled, state.hold_remaining_secs),
                 );
                 ui.add_space(16.0);
-                ui.separator();
+                let (div_rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 72.0), Sense::hover());
+                ui.painter().line_segment(
+                    [div_rect.center_top(), div_rect.center_bottom()],
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                );
                 ui.add_space(16.0);
                 ui.horizontal_top(|ui| {
                     now_band_metrics(
@@ -493,7 +506,7 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                 });
             });
         } else {
-            now_band_left_block(ui, plan_name, state.hold_remaining_secs);
+            now_band_left_block(ui, plan_name, config.general.turbo_rescue_enabled, state.hold_remaining_secs);
             ui.add_space(12.0);
             ui.horizontal_top(|ui| {
                 now_band_metrics(
@@ -538,52 +551,8 @@ fn format_mhz(mhz: u32) -> String {
     }
 }
 
-fn def_row(ui: &mut Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(132.0, 0.0),
-            Layout::top_down(Align::Min),
-            |ui| {
-                ui.label(
-                    RichText::new(label)
-                        .size(design::type_size::LABEL)
-                        .weak(),
-                );
-            },
-        );
-        ui.label(
-            RichText::new(value)
-                .size(design::type_size::LABEL)
-                .monospace(),
-        );
-    });
-    ui.add_space(2.0);
-}
-
-fn def_row_pill(ui: &mut Ui, label: &str, enabled: bool) {
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(132.0, 0.0),
-            Layout::top_down(Align::Min),
-            |ui| {
-                ui.label(
-                    RichText::new(label)
-                        .size(design::type_size::LABEL)
-                        .weak(),
-                );
-            },
-        );
-        if enabled {
-            design::compact_status_badge(ui, "Enabled", design::StatusKind::Success);
-        } else {
-            design::compact_status_badge(ui, "Disabled", design::StatusKind::Muted);
-        }
-    });
-    ui.add_space(2.0);
-}
-
 fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
-    design::section(ui, "Configuration", "The rules the monitor is running by.", |ui| {
+    design::section(ui, "Configuration", "", |ui| {
         let content_width = ui.available_width();
         let two_col = content_width >= CONFIG_PANEL_WIDE_THRESHOLD;
 
@@ -597,12 +566,14 @@ fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
             .cpu_info
             .as_ref()
             .map(|c| {
-                let base = c.base_mhz.map(format_mhz).unwrap_or_default();
-                if base.is_empty() {
-                    c.brand.clone()
-                } else {
-                    format!("{} @ {}", c.brand, base)
-                }
+                c.brand.clone()
+                // NOTE: If base speed becomes useful to show, use this... 
+                // let base = c.base_mhz.map(format_mhz).unwrap_or_default();                
+                // if base.is_empty() {
+                //     c.brand.clone()
+                // } else {
+                //     format!("{} @ {}", c.brand, base)
+                // }
             })
             .unwrap_or_else(|| "Unavailable".to_string());
 
@@ -615,39 +586,46 @@ fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
 
         let idle_wait = format!("{}s", config.general.idle_wait_seconds);
         let cpu_window = format!("{}s", config.general.cpu_average_window_seconds);
-        // Show trigger params even when turbo rescue is disabled — so the user can see
-        // what the threshold would be if they enable it.
         let turbo_trigger = format!(
             ">{}%  \u{00b7}  {}s above base",
             config.general.turbo_rescue_cpu_threshold_percent,
             config.general.turbo_rescue_window_seconds
         );
-        let turbo_enabled = config.general.turbo_rescue_enabled;
 
         if two_col {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_min_width(content_width / 2.0 - 12.0);
-                    def_row(ui, "Power Source", &power_source);
-                    def_row(ui, "Processor", &processor);
-                    def_row(ui, "Base Speed", &base_speed);
+                    design::info_row(ui, "Power Source", &power_source, true);
+                    ui.add_space(2.0);
+                    design::info_row(ui, "Processor", &processor, true);
+                    ui.add_space(2.0);
+                    design::info_row(ui, "Base Speed", &base_speed, true);
+                    ui.add_space(2.0);
                 });
                 ui.add_space(24.0);
                 ui.vertical(|ui| {
-                    def_row(ui, "Idle Wait", &idle_wait);
-                    def_row(ui, "CPU Avg Window", &cpu_window);
-                    def_row_pill(ui, "Turbo Rescue", turbo_enabled);
-                    def_row(ui, "Turbo Trigger", &turbo_trigger);
+                    design::info_row(ui, "Idle Wait", &idle_wait, true);
+                    ui.add_space(2.0);
+                    design::info_row(ui, "CPU Avg Window", &cpu_window, true);
+                    ui.add_space(2.0);
+                    design::info_row(ui, "Turbo Trigger", &turbo_trigger, true);
+                    ui.add_space(2.0);
                 });
             });
         } else {
-            def_row(ui, "Power Source", &power_source);
-            def_row(ui, "Processor", &processor);
-            def_row(ui, "Base Speed", &base_speed);
-            def_row(ui, "Idle Wait", &idle_wait);
-            def_row(ui, "CPU Avg Window", &cpu_window);
-            def_row_pill(ui, "Turbo Rescue", turbo_enabled);
-            def_row(ui, "Turbo Trigger", &turbo_trigger);
+            design::info_row(ui, "Power Source", &power_source, true);
+            ui.add_space(2.0);
+            design::info_row(ui, "Processor", &processor, true);
+            ui.add_space(2.0);
+            design::info_row(ui, "Base Speed", &base_speed, true);
+            ui.add_space(2.0);
+            design::info_row(ui, "Idle Wait", &idle_wait, true);
+            ui.add_space(2.0);
+            design::info_row(ui, "CPU Avg Window", &cpu_window, true);
+            ui.add_space(2.0);
+            design::info_row(ui, "Turbo Trigger", &turbo_trigger, true);
+            ui.add_space(2.0);
         }
     });
 }

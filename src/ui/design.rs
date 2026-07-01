@@ -1,7 +1,6 @@
 use egui::{self, Align, Color32, Layout, RichText, Sense, Stroke, Ui};
 
 pub mod type_size {
-    pub const PAGE_TITLE: f32 = 24.0;
     pub const SECTION_TITLE: f32 = 18.0;
     pub const LABEL: f32 = 14.0;
     pub const HELP: f32 = 12.5;
@@ -77,15 +76,6 @@ pub fn registered_status_text(registered: bool) -> &'static str {
     }
 }
 
-pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str) {
-    ui.label(RichText::new(title).size(type_size::PAGE_TITLE).strong());
-    ui.add_space(4.0);
-    ui.label(RichText::new(subtitle).weak().size(type_size::LABEL));
-    ui.add_space(10.0);
-    ui.separator();
-    ui.add_space(spacing::SECTION_GAP);
-}
-
 pub fn section(ui: &mut Ui, title: &str, description: &str, add_contents: impl FnOnce(&mut Ui)) {
     section_with_header_action(ui, title, description, |_| {}, add_contents);
 }
@@ -113,8 +103,10 @@ pub fn section_with_header_action(
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(title).size(type_size::SECTION_TITLE).strong());
-                    ui.add_space(2.0);
-                    ui.label(RichText::new(description).weak().size(type_size::HELP));
+                    if !description.is_empty() {
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(description).weak().size(type_size::HELP));
+                    }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), add_action);
             });
@@ -320,28 +312,6 @@ pub fn icon_button(ui: &mut Ui, label: &str, tooltip: &str, accent: Color32) -> 
     ui.add_sized([28.0, 28.0], button).on_hover_text(tooltip)
 }
 
-pub fn plan_badge(ui: &mut Ui, plan_name: &str) {
-    let lower = plan_name.to_lowercase();
-    let color = if lower.contains("ultimate") || lower.contains("performance") {
-        color::ACCENT
-    } else if lower.contains("power saver") || lower.contains("low power") {
-        color::SUCCESS
-    } else {
-        // Balanced and unknown plans are neutral — not a warning state
-        ui.visuals().text_color()
-    };
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), Sense::hover());
-        ui.painter().circle_filled(rect.center(), 4.0, color);
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(plan_name)
-                .size(type_size::LABEL)
-                .strong()
-                .color(color),
-        );
-    });
-}
 
 fn draw_checkmark(ui: &Ui, center: egui::Pos2) {
     let check_stroke = Stroke::new(1.6, Color32::WHITE);
@@ -446,4 +416,217 @@ fn draw_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color
             );
         }
     }
+}
+
+// ── DS primitives ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum CalloutTone {
+    Neutral,
+    #[allow(dead_code)]
+    Accent,
+    #[allow(dead_code)]
+    Warning,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ChipTone {
+    Muted,
+    #[allow(dead_code)]
+    Accent,
+    Warning,
+}
+
+fn blend_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let u = 1.0 - t;
+    Color32::from_rgb(
+        (a.r() as f32 * t + b.r() as f32 * u) as u8,
+        (a.g() as f32 * t + b.g() as f32 * u) as u8,
+        (a.b() as f32 * t + b.b() as f32 * u) as u8,
+    )
+}
+
+pub fn callout(
+    ui: &mut Ui,
+    title: Option<&str>,
+    tone: CalloutTone,
+    add_body: impl FnOnce(&mut Ui),
+) {
+    let (border_color, extreme_bg) = {
+        let visuals = ui.visuals();
+        let base_border = visuals.noninteractive().bg_stroke.color;
+        let border_color = match tone {
+            CalloutTone::Neutral => base_border,
+            CalloutTone::Accent => blend_color(color::ACCENT, base_border, 0.55),
+            CalloutTone::Warning => blend_color(color::WARNING, base_border, 0.55),
+        };
+        (border_color, visuals.extreme_bg_color)
+    };
+    let frame = egui::Frame::none()
+        .fill(extreme_bg)
+        .stroke(egui::Stroke::new(1.0, border_color))
+        .rounding(radius::CONTROL)
+        .inner_margin(egui::Margin {
+            left: 14.0,
+            right: 14.0,
+            top: 12.0,
+            bottom: 12.0,
+        });
+    frame.show(ui, |ui| {
+        if let Some(t) = title {
+            ui.label(
+                RichText::new(t)
+                    .size(type_size::LABEL)
+                    .strong()
+                    .color(ui.visuals().text_color()),
+            );
+            ui.add_space(6.0);
+        }
+        add_body(ui);
+    });
+}
+
+pub fn metric_tile(ui: &mut Ui, label: &str, value: &str, accent: bool) {
+    let frame = {
+        let visuals = ui.visuals();
+        egui::Frame::none()
+            .fill(visuals.extreme_bg_color)
+            .stroke(egui::Stroke::new(1.0, visuals.noninteractive().bg_stroke.color))
+            .rounding(radius::CONTROL)
+            .inner_margin(egui::Margin {
+                left: 14.0,
+                right: 14.0,
+                top: 12.0,
+                bottom: 12.0,
+            })
+    };
+    frame.show(ui, |ui| {
+        ui.label(
+            RichText::new(label)
+                .size(type_size::HELP)
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(6.0);
+        let value_color = if accent {
+            color::ACCENT
+        } else {
+            ui.visuals().text_color()
+        };
+        ui.label(
+            RichText::new(value)
+                .size(type_size::METRIC_VALUE)
+                .color(value_color),
+        );
+    });
+}
+
+pub fn info_row(ui: &mut Ui, label: &str, value: &str, mono: bool) {
+    let value_font = if mono {
+        egui::FontId::monospace(type_size::LABEL)
+    } else {
+        egui::FontId::proportional(type_size::LABEL)
+    };
+    let row_height = ui.fonts(|f| {
+        f.row_height(&egui::FontId::proportional(type_size::LABEL))
+            .max(f.row_height(&value_font))
+    });
+    ui.horizontal(|ui| {
+        ui.allocate_ui(egui::vec2(150.0, row_height), |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(label)
+                        .size(type_size::LABEL)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        });
+        ui.add_space(8.0);
+        let rt = RichText::new(value).size(type_size::LABEL);
+        let rt = if mono { rt.monospace() } else { rt };
+        ui.label(rt);
+    });
+}
+
+pub fn chip(ui: &mut Ui, text: &str, tone: ChipTone) -> egui::Response {
+    let weak_text = ui.visuals().weak_text_color();
+    let text_color = match tone {
+        ChipTone::Muted => weak_text,
+        ChipTone::Accent => color::ACCENT,
+        ChipTone::Warning => color::WARNING,
+    };
+    let extreme_bg = ui.visuals().extreme_bg_color;
+    let border_color = ui.visuals().noninteractive().bg_stroke.color;
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(type_size::STATUS),
+        text_color,
+    );
+    let pad_x = 12.0_f32;
+    let height = 26.0_f32;
+    let desired = egui::vec2(galley.rect.width() + pad_x * 2.0, height);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect(
+            rect,
+            egui::Rounding::same(radius::PILL),
+            extreme_bg,
+            egui::Stroke::new(1.0, border_color),
+        );
+        ui.painter().galley(
+            egui::pos2(
+                rect.left() + pad_x,
+                rect.center().y - galley.rect.height() / 2.0,
+            ),
+            galley,
+            text_color,
+        );
+    }
+    response
+}
+
+pub fn plan_pill(ui: &mut Ui, plan_name: &str) -> egui::Response {
+    let lower = plan_name.to_lowercase();
+    let weak_text = ui.visuals().weak_text_color();
+    let (text_color, mix): (Color32, f32) = if lower.contains("ultimate") {
+        (color::ACCENT, 0.60)
+    } else if lower.contains("high performance") {
+        (color::SUCCESS, 0.60)
+    } else if lower.contains("power saver") || lower.contains("low power") {
+        (weak_text, 0.0)
+    } else {
+        (color::WARNING, 0.60)
+    };
+    let base_border = ui.visuals().noninteractive().bg_stroke.color;
+    let extreme_bg = ui.visuals().extreme_bg_color;
+    let border_color = if mix > 0.0 {
+        blend_color(text_color, base_border, mix)
+    } else {
+        base_border
+    };
+    let galley = ui.painter().layout_no_wrap(
+        plan_name.to_string(),
+        egui::FontId::proportional(type_size::STATUS),
+        text_color,
+    );
+    let pad_x = 12.0_f32;
+    let height = 24.0_f32;
+    let desired = egui::vec2(galley.rect.width() + pad_x * 2.0, height);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect(
+            rect,
+            egui::Rounding::same(radius::PILL),
+            extreme_bg,
+            egui::Stroke::new(1.0, border_color),
+        );
+        ui.painter().galley(
+            egui::pos2(
+                rect.left() + pad_x,
+                rect.center().y - galley.rect.height() / 2.0,
+            ),
+            galley,
+            text_color,
+        );
+    }
+    response
 }

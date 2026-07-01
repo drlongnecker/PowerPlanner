@@ -126,8 +126,8 @@ fn main() {
     });
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("PowerPlanner")
-        .with_inner_size([1280.0, 760.0])
-        .with_min_inner_size([1080.0, 760.0]);
+        .with_inner_size([1280.0, 780.0])
+        .with_min_inner_size([1080.0, 780.0]);
     if let Some(icon_data) = icon {
         viewport = viewport.with_icon(icon_data);
     }

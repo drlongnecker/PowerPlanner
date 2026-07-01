@@ -264,12 +264,6 @@ pub fn render(
     }
 
     crate::ui::padded_page(ui, |ui| {
-        design::page_header(
-            ui,
-            "Settings",
-            "Tune startup behavior and the Standard > High Performance > Low Power plan flow.",
-        );
-
         let tab_id = ui.make_persistent_id("settings_tab");
         let mut selected_tab = ui
             .data_mut(|data| data.get_persisted::<SettingsTab>(tab_id))
@@ -723,18 +717,11 @@ fn processor_recommendation_note(
     rationale: &str,
 ) {
     let summary = topology_summary(cpu);
-    egui::Frame::none()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .rounding(design::radius::CONTROL)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(format!("{preset} recommended for {}", summary.processor))
-                    .size(design::type_size::LABEL)
-                    .strong(),
-            );
-            ui.add_space(3.0);
+    design::callout(
+        ui,
+        Some(&format!("{preset} recommended for {}", summary.processor)),
+        design::CalloutTone::Neutral,
+        |ui| {
             ui.label(
                 RichText::new(summary.detail)
                     .weak()
@@ -742,7 +729,8 @@ fn processor_recommendation_note(
             );
             ui.add_space(3.0);
             ui.label(RichText::new(rationale).size(design::type_size::HELP));
-        });
+        },
+    );
 }
 
 fn ultimate_performance_setup_controls(
@@ -761,74 +749,68 @@ fn ultimate_performance_setup_controls(
     }
 
     ui.add_space(design::spacing::ROW_GAP);
-    egui::Frame::none()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .rounding(design::radius::CONTROL)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .show(ui, |ui| {
-            if missing {
-                ui.label(
-                    RichText::new("Ultimate Performance is not available")
-                        .size(design::type_size::LABEL)
-                        .strong(),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "Ultimate Performance prioritizes responsiveness by reducing power-saving delays. It can use more energy and produce more heat, does not overclock the CPU, and is best used while plugged in.",
-                    )
-                    .weak()
-                    .size(design::type_size::HELP),
-                );
-                ui.add_space(8.0);
-                let pending = matches!(
-                    state.ultimate_performance_setup,
-                    UltimatePerformanceSetupState::Pending
-                );
-                let label = if pending {
-                    "Adding Ultimate Performance..."
-                } else {
-                    "Add Ultimate Performance"
-                };
-                if ui
-                    .add_enabled(!pending, egui::Button::new(label))
-                    .clicked()
-                {
-                    let _ = tx.send(MonitorCommand::InstallUltimatePerformance { recommendation });
-                }
+    let title = if missing {
+        Some("Ultimate Performance is not available")
+    } else {
+        None
+    };
+    design::callout(ui, title, design::CalloutTone::Neutral, |ui| {
+        if missing {
+            ui.label(
+                RichText::new(
+                    "Ultimate Performance prioritizes responsiveness by reducing power-saving delays. It can use more energy and produce more heat, does not overclock the CPU, and is best used while plugged in.",
+                )
+                .weak()
+                .size(design::type_size::HELP),
+            );
+            ui.add_space(8.0);
+            let pending = matches!(
+                state.ultimate_performance_setup,
+                UltimatePerformanceSetupState::Pending
+            );
+            let label = if pending {
+                "Adding Ultimate Performance..."
+            } else {
+                "Add Ultimate Performance"
+            };
+            if ui
+                .add_enabled(!pending, egui::Button::new(label))
+                .clicked()
+            {
+                let _ = tx.send(MonitorCommand::InstallUltimatePerformance { recommendation });
             }
+        }
 
-            match &state.ultimate_performance_setup {
-                UltimatePerformanceSetupState::Idle => {}
-                UltimatePerformanceSetupState::Pending => {
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Windows is adding and configuring the plan.")
-                            .weak()
-                            .size(design::type_size::HELP),
-                    );
-                }
-                UltimatePerformanceSetupState::Succeeded(plan) => {
-                    if missing {
-                        ui.add_space(6.0);
-                    }
-                    ui.label(
-                        RichText::new(format!("{} was added and selected.", plan.name))
-                            .color(design::color::SUCCESS)
-                            .size(design::type_size::HELP),
-                    );
-                }
-                UltimatePerformanceSetupState::Failed(message) => {
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new(message)
-                            .color(ui.visuals().error_fg_color)
-                            .size(design::type_size::HELP),
-                    );
-                }
+        match &state.ultimate_performance_setup {
+            UltimatePerformanceSetupState::Idle => {}
+            UltimatePerformanceSetupState::Pending => {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Windows is adding and configuring the plan.")
+                        .weak()
+                        .size(design::type_size::HELP),
+                );
             }
-        });
+            UltimatePerformanceSetupState::Succeeded(plan) => {
+                if missing {
+                    ui.add_space(6.0);
+                }
+                ui.label(
+                    RichText::new(format!("{} was added and selected.", plan.name))
+                        .color(design::color::SUCCESS)
+                        .size(design::type_size::HELP),
+                );
+            }
+            UltimatePerformanceSetupState::Failed(message) => {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(message)
+                        .color(ui.visuals().error_fg_color)
+                        .size(design::type_size::HELP),
+                );
+            }
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1088,43 +1070,43 @@ fn preset_current_configuration(
                     ui.end_row();
 
                     ui.label("Min");
-                    ui.label(format_limit(settings.min_percent.ac));
-                    ui.label(format_limit(settings.min_percent.dc));
+                    ui.label(RichText::new(format_limit(settings.min_percent.ac)).monospace());
+                    ui.label(RichText::new(format_limit(settings.min_percent.dc)).monospace());
                     ui.end_row();
 
                     ui.label("Max");
-                    ui.label(format_limit(settings.max_percent.ac));
-                    ui.label(format_limit(settings.max_percent.dc));
+                    ui.label(RichText::new(format_limit(settings.max_percent.ac)).monospace());
+                    ui.label(RichText::new(format_limit(settings.max_percent.dc)).monospace());
                     ui.end_row();
 
                     ui.label("Boost");
-                    ui.label(format_boost_mode(settings.boost_mode.ac));
-                    ui.label(format_boost_mode(settings.boost_mode.dc));
+                    ui.label(RichText::new(format_boost_mode(settings.boost_mode.ac)).monospace());
+                    ui.label(RichText::new(format_boost_mode(settings.boost_mode.dc)).monospace());
                     ui.end_row();
 
                     ui.label("Core parking min");
-                    ui.label(format_limit(settings.core_parking_min_cores_percent.ac));
-                    ui.label(format_limit(settings.core_parking_min_cores_percent.dc));
+                    ui.label(RichText::new(format_limit(settings.core_parking_min_cores_percent.ac)).monospace());
+                    ui.label(RichText::new(format_limit(settings.core_parking_min_cores_percent.dc)).monospace());
                     ui.end_row();
 
                     if topology == CpuTopologyKind::Hybrid {
                         ui.label("Faster class min");
-                        ui.label(format_limit(settings.class1_min_percent.ac));
-                        ui.label(format_limit(settings.class1_min_percent.dc));
+                        ui.label(RichText::new(format_limit(settings.class1_min_percent.ac)).monospace());
+                        ui.label(RichText::new(format_limit(settings.class1_min_percent.dc)).monospace());
                         ui.end_row();
 
                         ui.label("Faster class max");
-                        ui.label(format_limit(settings.class1_max_percent.ac));
-                        ui.label(format_limit(settings.class1_max_percent.dc));
+                        ui.label(RichText::new(format_limit(settings.class1_max_percent.ac)).monospace());
+                        ui.label(RichText::new(format_limit(settings.class1_max_percent.dc)).monospace());
                         ui.end_row();
 
                         ui.label("Faster class parking min");
-                        ui.label(format_limit(
+                        ui.label(RichText::new(format_limit(
                             settings.class1_core_parking_min_cores_percent.ac,
-                        ));
-                        ui.label(format_limit(
+                        )).monospace());
+                        ui.label(RichText::new(format_limit(
                             settings.class1_core_parking_min_cores_percent.dc,
-                        ));
+                        )).monospace());
                         ui.end_row();
                     }
                 });
@@ -1393,18 +1375,11 @@ fn render_energy_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
 }
 
 fn render_energy_reference_links(ui: &mut Ui) {
-    egui::Frame::none()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .rounding(design::radius::CONTROL)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new("Reference data")
-                    .size(design::type_size::LABEL)
-                    .strong(),
-            );
-            ui.add_space(4.0);
+    design::callout(
+        ui,
+        Some("Reference data"),
+        design::CalloutTone::Neutral,
+        |ui| {
             ui.label(
                 RichText::new("PowerPlanner uses manual estimates in v1. These sources can help set your electricity rate and CPU watt profile.")
                     .weak()
@@ -1424,7 +1399,8 @@ fn render_energy_reference_links(ui: &mut Ui) {
                     ui.hyperlink_to(label, url);
                 }
             });
-        });
+        },
+    );
 }
 
 fn settings_grid(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {

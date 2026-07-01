@@ -5,7 +5,7 @@ use crate::ui::design;
 use egui::{self, Align2, Color32, Pos2, RichText, Sense, Shape, Stroke, Ui};
 use std::sync::mpsc;
 
-const POWER_GRAPH_HEIGHT: f32 = 360.0;
+const POWER_GRAPH_HEIGHT: f32 = 422.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PowerUsageSummary {
@@ -89,16 +89,10 @@ pub fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<MonitorCommand
     let history = load_power_usage_history(config);
 
     crate::ui::padded_page(ui, |ui| {
-        design::page_header(
+        design::section_with_header_action(
             ui,
             "Power Usage",
             "Estimated CPU power, estimated cost, and savings from proper plan usage.",
-        );
-
-        design::section_with_header_action(
-            ui,
-            "Estimated CPU Cost",
-            "Modeled CPU package power using sampled CPU average, sampled speed, active plan, and your manual energy rate.",
             |_| {},
             |ui| {
                 if !config.general.energy_estimates_enabled {
@@ -125,32 +119,41 @@ pub fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<MonitorCommand
                 render_callouts(ui, &history);
                 ui.add_space(design::spacing::SECTION_GAP);
                 let available = ui.available_width();
-                if available >= 920.0 {
-                    let gap = design::spacing::SECTION_GAP;
-                    let chart_width = ((available - gap) * 0.667).max(420.0);
-                    let details_width = (available - gap - chart_width).max(260.0);
-                    ui.horizontal_wrapped(|ui| {
-                        render_chart_legend(ui);
-                        ui.add_space(18.0);
-                    });
-                    ui.add_space(6.0);
+                const DETAILS_WIDTH: f32 = 300.0;
+                const GAP: f32 = design::spacing::SECTION_GAP;
+                if available >= DETAILS_WIDTH + GAP + 400.0 {
+                    let chart_width = available - GAP - DETAILS_WIDTH;
+                    let height_id = ui.id().with("details_height");
+                    let chart_height = ui
+                        .data(|d| d.get_temp::<f32>(height_id))
+                        .unwrap_or(POWER_GRAPH_HEIGHT);
+
                     ui.horizontal_top(|ui| {
                         let selected = ui
                             .allocate_ui(egui::vec2(chart_width, 0.0), |ui| {
-                                render_power_usage_chart(ui, &history)
+                                render_power_usage_chart(ui, &history, chart_height)
                             })
                             .inner;
-                        ui.add_space(gap);
-                        ui.allocate_ui(egui::vec2(details_width, 0.0), |ui| {
-                            render_sample_details(ui, selected.as_ref(), POWER_GRAPH_HEIGHT);
+                        ui.add_space(GAP);
+                        let details = ui.allocate_ui_with_layout(
+                            egui::vec2(DETAILS_WIDTH, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                render_sample_details(ui, selected.as_ref());
+                            },
+                        );
+                        ui.data_mut(|d| {
+                            d.insert_temp(height_id, details.response.rect.height());
                         });
                     });
+                    ui.add_space(6.0);
+                    render_chart_legend(ui);                    
                 } else {
                     render_chart_legend(ui);
                     ui.add_space(18.0);
-                    let selected = render_power_usage_chart(ui, &history);
+                    let selected = render_power_usage_chart(ui, &history, POWER_GRAPH_HEIGHT);
                     ui.add_space(design::spacing::SECTION_GAP);
-                    render_sample_details(ui, selected.as_ref(), 0.0);
+                    render_sample_details(ui, selected.as_ref());
                 }
             },
         );
@@ -223,53 +226,56 @@ fn render_callouts(ui: &mut Ui, history: &[CpuHistoryPoint]) {
     if let Some(summary) = build_power_usage_summary(history) {
         let available = ui.available_width().max(220.0);
         let gap = design::spacing::ROW_GAP;
-        let columns = if available >= 920.0 {
-            5.0
-        } else if available >= 760.0 {
-            3.0
-        } else if available >= 460.0 {
-            2.0
+
+        let tiles: &[(&str, String)] = &[
+            ("Current est. CPU power", format!("{:.0} W", summary.latest_watts)),
+            ("Average est. CPU power", format!("{:.0} W", summary.average_watts)),
+            ("Peak est. CPU power", format!("{:.0} W", summary.peak_watts)),
+            ("Estimated cost", format_money(summary.estimated_cost_usd)),
+            ("Estimated savings", format_money(summary.estimated_savings_usd)),
+        ];
+
+        let label_font = egui::FontId::proportional(design::type_size::HELP);
+        let value_font = egui::FontId::proportional(design::type_size::METRIC_VALUE);
+        let tile_width = tiles
+            .iter()
+            .map(|(label, value)| {
+                let lw = ui.fonts(|f| {
+                    f.layout_no_wrap(label.to_string(), label_font.clone(), Color32::WHITE)
+                        .rect
+                        .width()
+                });
+                let vw = ui.fonts(|f| {
+                    f.layout_no_wrap(value.clone(), value_font.clone(), Color32::WHITE)
+                        .rect
+                        .width()
+                });
+                (lw.max(vw) + 28.0).ceil()
+            })
+            .fold(160.0_f32, f32::max);
+
+        let columns: usize = if available >= tile_width * 3.0 + gap * 2.0 {
+            3
+        } else if available >= tile_width * 2.0 + gap {
+            2
         } else {
-            1.0
+            1
         };
-        let width = ((available - gap * (columns - 1.0)) / columns).max(160.0);
+
         egui::Grid::new("power_usage_callouts")
-            .num_columns(columns as usize)
+            .num_columns(columns)
+            .min_col_width(tile_width)
+            .max_col_width(tile_width)
             .spacing([gap, gap])
             .show(ui, |ui| {
                 let mut index = 0_usize;
-                let mut add = |ui: &mut Ui, label: &str, value: String| {
-                    callout(ui, label, &value, width);
+                for (label, value) in tiles {
+                    design::metric_tile(ui, label, value, false);
                     index += 1;
-                    if index % columns as usize == 0 {
+                    if index % columns == 0 {
                         ui.end_row();
                     }
-                };
-                add(
-                    ui,
-                    "Current est. CPU power",
-                    format!("{:.0} W", summary.latest_watts),
-                );
-                add(
-                    ui,
-                    "Average est. CPU power",
-                    format!("{:.0} W", summary.average_watts),
-                );
-                add(
-                    ui,
-                    "Peak est. CPU power",
-                    format!("{:.0} W", summary.peak_watts),
-                );
-                add(
-                    ui,
-                    "Estimated cost",
-                    format_money(summary.estimated_cost_usd),
-                );
-                add(
-                    ui,
-                    "Estimated savings",
-                    format_money(summary.estimated_savings_usd),
-                );
+                }
             });
     } else {
         ui.label(
@@ -280,26 +286,10 @@ fn render_callouts(ui: &mut Ui, history: &[CpuHistoryPoint]) {
     }
 }
 
-fn callout(ui: &mut Ui, label: &str, value: &str, width: f32) {
-    egui::Frame::none()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .rounding(design::radius::CONTROL)
-        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
-        .show(ui, |ui| {
-            ui.set_width(width - 28.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(label).weak().size(design::type_size::HELP));
-                ui.add_space(3.0);
-                ui.label(RichText::new(value).strong().size(22.0));
-            });
-        });
-}
-
-fn render_power_usage_chart(ui: &mut Ui, history: &[CpuHistoryPoint]) -> Option<CpuHistoryPoint> {
+fn render_power_usage_chart(ui: &mut Ui, history: &[CpuHistoryPoint], height: f32) -> Option<CpuHistoryPoint> {
     let desired_width = ui.available_width().max(160.0);
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(desired_width, POWER_GRAPH_HEIGHT),
+        egui::vec2(desired_width, height),
         Sense::hover(),
     );
     let painter = ui.painter_at(rect);
@@ -508,7 +498,7 @@ fn legend_item(ui: &mut Ui, color: Color32, label: &str) {
     ui.add_space(8.0);
 }
 
-fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>, target_height: f32) {
+fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>) {
     egui::Frame::none()
         .fill(ui.visuals().extreme_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -516,11 +506,6 @@ fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>, target
         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if target_height > 0.0 {
-                ui.set_min_height((target_height - 20.0).max(236.0));
-            } else {
-                ui.set_min_height(236.0);
-            }
             if let Some(point) = selected {
                 let Some(energy) = point.energy else {
                     ui.label(
@@ -530,36 +515,32 @@ fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>, target
                     );
                     return;
                 };
-                egui::Grid::new("power_usage_sample_details")
-                    .num_columns(2)
-                    .spacing([14.0, 8.0])
-                    .min_col_width(92.0)
-                    .show(ui, |ui| {
-                        detail_row(
-                            ui,
-                            "Timestamp",
-                            &point.ts.format("%Y-%m-%d %H:%M:%S").to_string(),
-                        );
-                        detail_row(ui, "Plan", &point.plan_name);
-                        detail_row(
-                            ui,
-                            "Trigger",
-                            point.trigger.trim_start_matches("__highlighted__"),
-                        );
-                        detail_row(ui, "CPU speed", &format_speed_pair(point));
-                        detail_row(
-                            ui,
-                            "Est. CPU power",
-                            &format!("{:.1} W", energy.estimated_watts),
-                        );
-                        detail_row(ui, "CPU average", &format!("{:.1}%", point.average_percent));
-                        detail_row(ui, "Est. cost", &format_money(energy.estimated_cost_usd));
-                        detail_row(
-                            ui,
-                            "Est. savings",
-                            &format_money(energy.estimated_savings_usd),
-                        );
-                    });
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    design::info_row(ui, "Timestamp", "", false);
+                    design::info_row(ui, "  ", &point.ts.format("%Y-%m-%d %H:%M:%S").to_string(), true);
+
+                    design::info_row(ui, "Plan", "", false);
+                    design::info_row(ui, "  ", &point.plan_name, true);
+
+                    design::info_row(ui, "Trigger", "", false);
+                    design::info_row(ui, "  ", point.trigger.trim_start_matches("__highlighted__"), true);
+
+                    design::info_row(ui, "CPU speed", "", false);
+                    design::info_row(ui, "  ", &format_speed_pair(point), true);
+
+                    design::info_row(ui, "Est. CPU power", "", false);
+                    design::info_row(ui, "  ", &format!("{:.1} W", energy.estimated_watts), true);
+
+                    design::info_row(ui, "CPU average", "", false);
+                    design::info_row(ui, "  ", &format!("{:.1}%", point.average_percent), true);
+                    
+                    design::info_row(ui, "Est. cost", "", false);
+                    design::info_row(ui, "  ", &format_money(energy.estimated_cost_usd), true);
+                    
+                    design::info_row(ui, "Est. savings", "", false);
+                    design::info_row(ui, "  ", &format_money(energy.estimated_savings_usd), true);
+                });
             } else {
                 ui.label(
                     RichText::new("No sample selected.")
@@ -568,12 +549,6 @@ fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>, target
                 );
             }
         });
-}
-
-fn detail_row(ui: &mut Ui, label: &str, value: &str) {
-    ui.label(RichText::new(label).weak().size(design::type_size::HELP));
-    ui.label(RichText::new(value).size(design::type_size::STATUS));
-    ui.end_row();
 }
 
 fn add_line(painter: &egui::Painter, points: Vec<Pos2>, stroke: Stroke) {

@@ -40,7 +40,6 @@ mod tests {
 
     #[test]
     fn design_tokens_keep_settings_and_dashboard_on_one_scale() {
-        assert_eq!(design::type_size::PAGE_TITLE, 24.0);
         assert_eq!(design::type_size::SECTION_TITLE, 18.0);
         assert_eq!(design::type_size::LABEL, 14.0);
         assert_eq!(design::type_size::HELP, 12.5);

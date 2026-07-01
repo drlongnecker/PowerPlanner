@@ -1,7 +1,7 @@
-use crate::types::{AppState, CpuHistoryPlanKind, PowerEvent};
+use crate::types::{AppState, PowerEvent};
 use crate::ui::design;
 use chrono::{DateTime, Duration, Local, NaiveDate};
-use egui::{Color32, RichText, Stroke, Ui};
+use egui::{RichText, Stroke, Ui};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EventPlanKind {
@@ -60,21 +60,15 @@ mod tests {
 
 pub fn render(ui: &mut Ui, state: &AppState) {
     crate::ui::padded_page(ui, |ui| {
-        design::page_header(
+        design::section_with_header_action(
             ui,
             "Recent Events",
             "Review plan changes, triggers, and power source context.",
-        );
-
-        design::section_with_header_action(
-            ui,
-            "Event History",
-            "Recent plan switches grouped by day with readable trigger context.",
             |ui| {
-                if ui.button("Open Log").clicked() {
+                if design::command_button(ui, "Open Log").clicked() {
                     open_log();
                 }
-                if ui.button("Export CSV").clicked() {
+                if design::command_button(ui, "Export CSV").clicked() {
                     export_to_desktop();
                 }
             },
@@ -89,15 +83,17 @@ pub fn render(ui: &mut Ui, state: &AppState) {
 
 fn render_summary(ui: &mut Ui, summary: &HistorySummary) {
     ui.horizontal_wrapped(|ui| {
-        summary_chip(ui, &format!("{} events", summary.event_count));
-        summary_chip(ui, &format!("Last switch: {}", summary.last_switch));
-        summary_chip(
-            ui,
-            &format!(
-                "High Performance trigger: {}",
-                summary.high_performance_trigger
-            ),
-        );
+        design::chip(ui, &format!("{} events", summary.event_count), design::ChipTone::Muted);
+        ui.add_space(10.0);
+        design::chip(ui, &format!("Last switch: {}", summary.last_switch), design::ChipTone::Muted);
+        if summary.high_performance_trigger != "-" {
+            ui.add_space(10.0);
+            design::chip(
+                ui,
+                &format!("High Performance trigger: {}", summary.high_performance_trigger),
+                design::ChipTone::Warning,
+            );
+        }
     });
 }
 
@@ -137,85 +133,43 @@ fn render_event_feed(ui: &mut Ui, state: &AppState) {
 }
 
 fn render_event_row(ui: &mut Ui, event: &PowerEvent) {
-    let plan_kind = plan_kind(&event.plan_name);
+    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
     egui::Frame::none()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(Stroke::new(
-            1.0,
-            ui.visuals()
-                .widgets
-                .noninteractive
-                .bg_stroke
-                .color
-                .gamma_multiply(0.7),
-        ))
-        .rounding(design::radius::CONTROL)
+        .stroke(Stroke::new(1.0, border_color))
+        .rounding(design::radius::SECTION)
         .inner_margin(egui::Margin::symmetric(12.0, 8.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.set_min_height(44.0);
-                ui.vertical(|ui| {
-                    ui.set_width(72.0);
-                    ui.label(
-                        RichText::new(event.ts.format("%H:%M:%S").to_string())
-                            .size(design::type_size::STATUS),
-                    );
-                });
-
-                ui.vertical(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        plan_badge(ui, &event.plan_name, plan_kind);
+                ui.set_min_height(36.0);
+                let time_str = event.ts.format("%H:%M:%S").to_string();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(80.0, 36.0),
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
                         ui.label(
-                            RichText::new(trigger_label(&event.trigger))
+                            RichText::new(&time_str)
+                                .monospace()
                                 .size(design::type_size::LABEL),
                         );
-                    });
-                    ui.add_space(3.0);
-                    ui.label(
-                        RichText::new(event.ts.format("%Y-%m-%d").to_string())
-                            .weak()
-                            .size(design::type_size::HELP),
-                    );
-                });
-
+                    },
+                );
+                ui.add_space(6.0);
+                design::plan_pill(ui, &event.plan_name);
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(trigger_label(&event.trigger))
+                        .size(design::type_size::LABEL),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    power_badge(ui, &power_label(event.on_battery, event.battery_pct));
+                    design::chip(
+                        ui,
+                        &power_label(event.on_battery, event.battery_pct),
+                        design::ChipTone::Muted,
+                    );
                 });
             });
         });
     ui.add_space(6.0);
-}
-
-fn summary_chip(ui: &mut Ui, text: &str) {
-    pill(ui, text, ui.visuals().weak_text_color(), false);
-}
-
-fn plan_badge(ui: &mut Ui, text: &str, kind: EventPlanKind) {
-    pill(ui, text, plan_color(kind), true);
-}
-
-fn power_badge(ui: &mut Ui, text: &str) {
-    pill(ui, text, ui.visuals().weak_text_color(), false);
-}
-
-fn pill(ui: &mut Ui, text: &str, color: Color32, stronger_text: bool) {
-    let fill = color.gamma_multiply(if stronger_text { 0.18 } else { 0.10 });
-    egui::Frame::none()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, color.gamma_multiply(0.75)))
-        .rounding(design::radius::PILL)
-        .inner_margin(egui::Margin::symmetric(8.0, 3.0))
-        .show(ui, |ui| {
-            let text =
-                RichText::new(text)
-                    .size(design::type_size::STATUS)
-                    .color(if stronger_text {
-                        color
-                    } else {
-                        ui.visuals().text_color()
-                    });
-            ui.label(text);
-        });
 }
 
 fn build_summary(events: &std::collections::VecDeque<PowerEvent>) -> HistorySummary {
@@ -249,14 +203,6 @@ fn plan_kind(plan_name: &str) -> EventPlanKind {
     }
 }
 
-fn plan_color(kind: EventPlanKind) -> Color32 {
-    match kind {
-        EventPlanKind::LowPower => CpuHistoryPlanKind::LowPower.color(),
-        EventPlanKind::Standard => CpuHistoryPlanKind::Standard.color(),
-        EventPlanKind::Performance => CpuHistoryPlanKind::Performance.color(),
-        EventPlanKind::Other => design::color::WARNING,
-    }
-}
 
 fn trigger_label(trigger: &str) -> String {
     match trigger.trim().to_lowercase().as_str() {
