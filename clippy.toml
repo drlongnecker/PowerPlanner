@@ -1,0 +1,5 @@
+# Argument count before clippy::too_many_arguments fires (default: 7)
+too-many-arguments-threshold = 7
+
+# Cyclomatic complexity ceiling — relevant if nursery lints are enabled later
+cognitive-complexity-threshold = 25

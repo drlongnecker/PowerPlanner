@@ -37,6 +37,29 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[lints.rust]
+future_incompatible = "warn"
+nonstandard_style = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# egui pixel math requires constant f32/f64/int conversions — suppress the cast family
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+
+# internal application, not a published library — doc lints add no value here
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# intentional conventions
+must_use_candidate = "allow"      # helpers/builders don't need #[must_use] annotations
+module_name_repetitions = "allow" # render_foo() in ui::foo is standard egui convention
+too_many_lines = "allow"          # render functions are long by nature; enforce manually
+
 [profile.release]
 opt-level = 3
 lto = true
