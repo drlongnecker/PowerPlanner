@@ -8,23 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
+pub(crate) struct Config {
     pub general: GeneralConfig,
     pub autostart: AutostartConfig,
     pub watchlist: WatchlistConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum PlanTimeRangeMode {
+#[derive(Default)]
+pub(crate) enum PlanTimeRangeMode {
+    #[default]
     MatchUsageTrend,
     AllRetained,
 }
 
-impl Default for PlanTimeRangeMode {
-    fn default() -> Self {
-        Self::MatchUsageTrend
-    }
-}
 
 impl<'de> Deserialize<'de> for PlanTimeRangeMode {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -35,7 +32,7 @@ impl<'de> Deserialize<'de> for PlanTimeRangeMode {
             .unwrap_or(toml::Value::String("match_usage_trend".to_string()));
         let mode = value
             .as_str()
-            .map(|value| value.to_ascii_lowercase())
+            .map(str::to_ascii_lowercase)
             .map(|value| match value.as_str() {
                 "all_retained" => Self::AllRetained,
                 _ => Self::MatchUsageTrend,
@@ -46,16 +43,13 @@ impl<'de> Deserialize<'de> for PlanTimeRangeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum PowerUsageRangeMode {
+#[derive(Default)]
+pub(crate) enum PowerUsageRangeMode {
+    #[default]
     RecentMinutes,
     AllRetained,
 }
 
-impl Default for PowerUsageRangeMode {
-    fn default() -> Self {
-        Self::RecentMinutes
-    }
-}
 
 impl<'de> Deserialize<'de> for PowerUsageRangeMode {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -66,7 +60,7 @@ impl<'de> Deserialize<'de> for PowerUsageRangeMode {
             .unwrap_or(toml::Value::String("recent_minutes".to_string()));
         let mode = value
             .as_str()
-            .map(|value| value.to_ascii_lowercase())
+            .map(str::to_ascii_lowercase)
             .map(|value| match value.as_str() {
                 "all_retained" => Self::AllRetained,
                 _ => Self::RecentMinutes,
@@ -77,17 +71,14 @@ impl<'de> Deserialize<'de> for PowerUsageRangeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum AppearanceMode {
+#[derive(Default)]
+pub(crate) enum AppearanceMode {
+    #[default]
     System,
     Light,
     Dark,
 }
 
-impl Default for AppearanceMode {
-    fn default() -> Self {
-        Self::System
-    }
-}
 
 impl<'de> Deserialize<'de> for AppearanceMode {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -98,7 +89,7 @@ impl<'de> Deserialize<'de> for AppearanceMode {
             .unwrap_or(toml::Value::String("system".to_string()));
         let mode = value
             .as_str()
-            .map(|value| value.to_ascii_lowercase())
+            .map(str::to_ascii_lowercase)
             .map(|value| match value.as_str() {
                 "light" => Self::Light,
                 "dark" => Self::Dark,
@@ -109,8 +100,10 @@ impl<'de> Deserialize<'de> for AppearanceMode {
     }
 }
 
+// Config flags map directly to independent user-facing settings; not state-machine states.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeneralConfig {
+pub(crate) struct GeneralConfig {
     pub poll_interval_ms: u64,
     pub hold_performance_seconds: u64,
     #[serde(alias = "idle_plan_guid")]
@@ -225,6 +218,8 @@ fn default_low_power_cpu_max_percent() -> u8 {
 fn default_low_power_boost_mode() -> u8 {
     0
 }
+// Return type is `Option` to match the `low_power_core_parking_min_cores_percent` field type for serde's `default`.
+#[allow(clippy::unnecessary_wraps)]
 fn default_low_power_core_parking_min_cores_percent() -> Option<u8> {
     Some(0)
 }
@@ -272,6 +267,8 @@ fn is_supported_usage_trend_window_minutes(value: u64) -> bool {
     matches!(value, 15 | 30 | 60 | 90 | 120)
 }
 
+// Return type is `Result` because serde's `deserialize_with` requires it.
+#[allow(clippy::unnecessary_wraps)]
 fn deserialize_usage_trend_window_minutes<'de, D>(
     deserializer: D,
 ) -> std::result::Result<u64, D::Error>
@@ -279,11 +276,12 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = toml::Value::deserialize(deserializer).unwrap_or(toml::Value::Integer(
-        default_usage_trend_window_minutes() as i64,
+        default_usage_trend_window_minutes().cast_signed(),
     ));
     let minutes = value
         .as_integer()
-        .unwrap_or(default_usage_trend_window_minutes() as i64) as u64;
+        .unwrap_or(default_usage_trend_window_minutes().cast_signed())
+        as u64;
     if is_supported_usage_trend_window_minutes(minutes) {
         Ok(minutes)
     } else {
@@ -292,14 +290,14 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutostartConfig {
+pub(crate) struct AutostartConfig {
     pub registered: bool,
     #[serde(skip)]
     pub is_elevated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WatchlistConfig {
+pub(crate) struct WatchlistConfig {
     pub processes: Vec<String>,
 }
 
@@ -356,15 +354,15 @@ impl Default for Config {
     }
 }
 
-pub fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("PowerPlanner")
         .join("config.toml")
 }
 
-/// Returns (config, is_first_run).
-pub fn load_or_default() -> (Config, bool) {
+/// Returns (config, `is_first_run`).
+pub(crate) fn load_or_default() -> (Config, bool) {
     let path = config_path();
     if !path.exists() {
         return (Config::default(), true);
@@ -375,7 +373,7 @@ pub fn load_or_default() -> (Config, bool) {
     (config, false)
 }
 
-pub fn save(config: &Config) -> AnyResult<()> {
+pub(crate) fn save(config: &Config) -> AnyResult<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -397,7 +395,7 @@ fn migrate_legacy_idle_wait(text: &str, config: &mut Config) {
     let Some(minutes) = value
         .get("general")
         .and_then(|general| general.get("idle_wait_minutes"))
-        .and_then(|minutes| minutes.as_integer())
+        .and_then(toml::Value::as_integer)
     else {
         return;
     };
@@ -407,7 +405,178 @@ fn migrate_legacy_idle_wait(text: &str, config: &mut Config) {
     }
 }
 
+fn discover_plan_guid_by_name(plans: &[PowerPlan], candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find_map(|candidate| {
+            plans.iter().find(|plan| {
+                plan.name.eq_ignore_ascii_case(candidate)
+                    || plan
+                        .name
+                        .to_ascii_lowercase()
+                        .contains(&candidate.to_ascii_lowercase())
+            })
+        })
+        .map(|plan| plan.guid.clone())
+}
+
+pub(crate) fn find_ultimate_performance_plan(plans: &[PowerPlan]) -> Option<&PowerPlan> {
+    plans
+        .iter()
+        .find(|plan| plan.name.eq_ignore_ascii_case("Ultimate Performance"))
+}
+
+fn default_available_guid(available_plans: &[PowerPlan]) -> String {
+    available_plans
+        .first()
+        .map(|plan| plan.guid.clone())
+        .unwrap_or_default()
+}
+
+fn select_valid_guid(configured: &str, available_plans: &[PowerPlan], fallback: &str) -> String {
+    if !configured.is_empty() && available_plans.iter().any(|plan| plan.guid == configured) {
+        configured.to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
+pub(crate) fn initialize_plan_selection(
+    config: &mut Config,
+    available_plans: &[PowerPlan],
+    active_plan: Option<&PowerPlan>,
+    is_first_run: bool,
+) {
+    let active_guid = active_plan.map_or_else(|| default_available_guid(available_plans), |plan| plan.guid.clone());
+    let discovered_low_power =
+        discover_plan_guid_by_name(available_plans, &["power saver", "power save"]);
+    let discovered_performance = discover_plan_guid_by_name(
+        available_plans,
+        &["ultimate performance", "high performance"],
+    );
+
+    if is_first_run {
+        config.general.standard_plan_guid.clone_from(&active_guid);
+        config.general.low_power_plan_guid =
+            discovered_low_power.unwrap_or_else(|| config.general.standard_plan_guid.clone());
+        config.general.performance_plan_guid =
+            discovered_performance.unwrap_or_else(|| config.general.standard_plan_guid.clone());
+        return;
+    }
+
+    config.general.standard_plan_guid = select_valid_guid(
+        &config.general.standard_plan_guid,
+        available_plans,
+        &active_guid,
+    );
+    config.general.low_power_plan_guid = select_valid_guid(
+        &config.general.low_power_plan_guid,
+        available_plans,
+        &discovered_low_power.unwrap_or_else(|| config.general.standard_plan_guid.clone()),
+    );
+    config.general.performance_plan_guid = select_valid_guid(
+        &config.general.performance_plan_guid,
+        available_plans,
+        &discovered_performance.unwrap_or_else(|| config.general.standard_plan_guid.clone()),
+    );
+}
+
+impl GeneralConfig {
+    pub(crate) fn standard_processor_preset(
+        &self,
+        topology: CpuTopologyKind,
+    ) -> ProcessorPresetRecommendation {
+        processor_preset(
+            self.standard_cpu_min_percent,
+            self.standard_cpu_max_percent,
+            Some(self.standard_boost_mode),
+            self.standard_core_parking_min_cores_percent,
+            topology,
+        )
+    }
+
+    pub(crate) fn high_performance_recommendation(
+        &self,
+        topology: CpuTopologyKind,
+    ) -> ProcessorPresetRecommendation {
+        ProcessorPresetRecommendation {
+            latency_hint_perf: Some(100),
+            idle_promote_threshold: Some(0),
+            ..processor_preset(
+                self.performance_cpu_min_percent,
+                self.performance_cpu_max_percent,
+                Some(self.performance_boost_mode),
+                Some(self.performance_core_parking_min_cores_percent),
+                topology,
+            )
+        }
+    }
+
+    pub(crate) fn low_power_processor_preset(
+        &self,
+        topology: CpuTopologyKind,
+    ) -> ProcessorPresetRecommendation {
+        processor_preset(
+            self.low_power_cpu_min_percent,
+            self.low_power_cpu_max_percent,
+            Some(self.low_power_boost_mode),
+            self.low_power_core_parking_min_cores_percent,
+            topology,
+        )
+    }
+
+    pub(crate) fn energy_rate(&self) -> EnergyRate {
+        EnergyRate {
+            dollars_per_kwh: self.energy_rate_dollars_per_kwh.max(0.0),
+            source_label: if self.energy_rate_source_label.trim().is_empty() {
+                default_energy_rate_source_label()
+            } else {
+                self.energy_rate_source_label.clone()
+            },
+        }
+    }
+
+    pub(crate) fn cpu_power_profile(&self) -> CpuPowerProfile {
+        let idle = self.cpu_idle_watts.max(0.0);
+        let base = self.cpu_base_watts.max(idle);
+        let turbo = self.cpu_turbo_watts.max(base);
+        CpuPowerProfile {
+            idle_watts: idle,
+            base_watts: base,
+            turbo_watts: turbo,
+            source_label: if self.cpu_power_source_label.trim().is_empty() {
+                default_cpu_power_source_label()
+            } else {
+                self.cpu_power_source_label.clone()
+            },
+        }
+    }
+}
+
+fn processor_preset(
+    min_percent: u8,
+    max_percent: u8,
+    boost_mode: Option<u8>,
+    core_parking_min_cores_percent: Option<u8>,
+    topology: CpuTopologyKind,
+) -> ProcessorPresetRecommendation {
+    ProcessorPresetRecommendation {
+        min_percent: min_percent as u32,
+        max_percent: max_percent as u32,
+        boost_mode: boost_mode.map(u32::from),
+        core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
+        latency_hint_perf: None,
+        idle_promote_threshold: None,
+        class1: (topology == CpuTopologyKind::Hybrid).then_some(ProcessorClassRecommendation {
+            min_percent: min_percent as u32,
+            max_percent: max_percent as u32,
+            core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
+        }),
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::types::PowerPlan;
@@ -811,177 +980,5 @@ processes = []
         assert_eq!(c.general.standard_plan_guid, "balanced-guid");
         assert_eq!(c.general.low_power_plan_guid, "powersaver-guid");
         assert_eq!(c.general.performance_plan_guid, "perf-guid");
-    }
-}
-
-fn discover_plan_guid_by_name(plans: &[PowerPlan], candidates: &[&str]) -> Option<String> {
-    candidates
-        .iter()
-        .find_map(|candidate| {
-            plans.iter().find(|plan| {
-                plan.name.eq_ignore_ascii_case(candidate)
-                    || plan
-                        .name
-                        .to_ascii_lowercase()
-                        .contains(&candidate.to_ascii_lowercase())
-            })
-        })
-        .map(|plan| plan.guid.clone())
-}
-
-pub fn find_ultimate_performance_plan(plans: &[PowerPlan]) -> Option<&PowerPlan> {
-    plans
-        .iter()
-        .find(|plan| plan.name.eq_ignore_ascii_case("Ultimate Performance"))
-}
-
-fn default_available_guid(available_plans: &[PowerPlan]) -> String {
-    available_plans
-        .first()
-        .map(|plan| plan.guid.clone())
-        .unwrap_or_default()
-}
-
-fn select_valid_guid(configured: &str, available_plans: &[PowerPlan], fallback: &str) -> String {
-    if !configured.is_empty() && available_plans.iter().any(|plan| plan.guid == configured) {
-        configured.to_string()
-    } else {
-        fallback.to_string()
-    }
-}
-
-pub fn initialize_plan_selection(
-    config: &mut Config,
-    available_plans: &[PowerPlan],
-    active_plan: Option<&PowerPlan>,
-    is_first_run: bool,
-) {
-    let active_guid = active_plan
-        .map(|plan| plan.guid.clone())
-        .unwrap_or_else(|| default_available_guid(available_plans));
-    let discovered_low_power =
-        discover_plan_guid_by_name(available_plans, &["power saver", "power save"]);
-    let discovered_performance = discover_plan_guid_by_name(
-        available_plans,
-        &["ultimate performance", "high performance"],
-    );
-
-    if is_first_run {
-        config.general.standard_plan_guid = active_guid.clone();
-        config.general.low_power_plan_guid =
-            discovered_low_power.unwrap_or_else(|| config.general.standard_plan_guid.clone());
-        config.general.performance_plan_guid =
-            discovered_performance.unwrap_or_else(|| config.general.standard_plan_guid.clone());
-        return;
-    }
-
-    config.general.standard_plan_guid = select_valid_guid(
-        &config.general.standard_plan_guid,
-        available_plans,
-        &active_guid,
-    );
-    config.general.low_power_plan_guid = select_valid_guid(
-        &config.general.low_power_plan_guid,
-        available_plans,
-        &discovered_low_power.unwrap_or_else(|| config.general.standard_plan_guid.clone()),
-    );
-    config.general.performance_plan_guid = select_valid_guid(
-        &config.general.performance_plan_guid,
-        available_plans,
-        &discovered_performance.unwrap_or_else(|| config.general.standard_plan_guid.clone()),
-    );
-}
-
-impl GeneralConfig {
-    pub fn standard_processor_preset(
-        &self,
-        topology: CpuTopologyKind,
-    ) -> ProcessorPresetRecommendation {
-        processor_preset(
-            self.standard_cpu_min_percent,
-            self.standard_cpu_max_percent,
-            Some(self.standard_boost_mode),
-            self.standard_core_parking_min_cores_percent,
-            topology,
-        )
-    }
-
-    pub fn high_performance_recommendation(
-        &self,
-        topology: CpuTopologyKind,
-    ) -> ProcessorPresetRecommendation {
-        ProcessorPresetRecommendation {
-            latency_hint_perf: Some(100),
-            idle_promote_threshold: Some(0),
-            ..processor_preset(
-                self.performance_cpu_min_percent,
-                self.performance_cpu_max_percent,
-                Some(self.performance_boost_mode),
-                Some(self.performance_core_parking_min_cores_percent),
-                topology,
-            )
-        }
-    }
-
-    pub fn low_power_processor_preset(
-        &self,
-        topology: CpuTopologyKind,
-    ) -> ProcessorPresetRecommendation {
-        processor_preset(
-            self.low_power_cpu_min_percent,
-            self.low_power_cpu_max_percent,
-            Some(self.low_power_boost_mode),
-            self.low_power_core_parking_min_cores_percent,
-            topology,
-        )
-    }
-
-    pub fn energy_rate(&self) -> EnergyRate {
-        EnergyRate {
-            dollars_per_kwh: self.energy_rate_dollars_per_kwh.max(0.0),
-            source_label: if self.energy_rate_source_label.trim().is_empty() {
-                default_energy_rate_source_label()
-            } else {
-                self.energy_rate_source_label.clone()
-            },
-        }
-    }
-
-    pub fn cpu_power_profile(&self) -> CpuPowerProfile {
-        let idle = self.cpu_idle_watts.max(0.0);
-        let base = self.cpu_base_watts.max(idle);
-        let turbo = self.cpu_turbo_watts.max(base);
-        CpuPowerProfile {
-            idle_watts: idle,
-            base_watts: base,
-            turbo_watts: turbo,
-            source_label: if self.cpu_power_source_label.trim().is_empty() {
-                default_cpu_power_source_label()
-            } else {
-                self.cpu_power_source_label.clone()
-            },
-        }
-    }
-}
-
-fn processor_preset(
-    min_percent: u8,
-    max_percent: u8,
-    boost_mode: Option<u8>,
-    core_parking_min_cores_percent: Option<u8>,
-    topology: CpuTopologyKind,
-) -> ProcessorPresetRecommendation {
-    ProcessorPresetRecommendation {
-        min_percent: min_percent as u32,
-        max_percent: max_percent as u32,
-        boost_mode: boost_mode.map(u32::from),
-        core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
-        latency_hint_perf: None,
-        idle_promote_threshold: None,
-        class1: (topology == CpuTopologyKind::Hybrid).then_some(ProcessorClassRecommendation {
-            min_percent: min_percent as u32,
-            max_percent: max_percent as u32,
-            core_parking_min_cores_percent: core_parking_min_cores_percent.map(u32::from),
-        }),
     }
 }

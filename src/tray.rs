@@ -10,17 +10,17 @@ const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
 const STARTUP_TRAY_ATTEMPTS: usize = 15;
 const STARTUP_TRAY_RETRY_DELAY: Duration = Duration::from_secs(1);
 
-pub struct Tray {
+pub(crate) struct Tray {
     pub show_item_id: tray_icon::menu::MenuId,
     pub balanced_item_id: tray_icon::menu::MenuId,
     pub perf_item_id: tray_icon::menu::MenuId,
     pub resume_item_id: tray_icon::menu::MenuId,
     pub exit_item_id: tray_icon::menu::MenuId,
-    _icon: TrayIcon,
+    icon: TrayIcon,
 }
 
 impl Tray {
-    pub fn new_after_startup_wait() -> Result<Self> {
+    pub(crate) fn new_after_startup_wait() -> Result<Self> {
         wait_with_delay(
             STARTUP_TRAY_ATTEMPTS,
             STARTUP_TRAY_RETRY_DELAY,
@@ -30,7 +30,7 @@ impl Tray {
         Self::new()
     }
 
-    pub fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let show = MenuItem::new("Show Window", true, None);
         let balanced = MenuItem::new("Force Balanced", true, None);
         let perf = MenuItem::new("Force High Performance", true, None);
@@ -61,12 +61,12 @@ impl Tray {
             perf_item_id: perf_id,
             resume_item_id: resume_id,
             exit_item_id: exit_id,
-            _icon: tray,
+            icon: tray,
         })
     }
 
-    pub fn set_tooltip(&self, text: &str) {
-        let _ = self._icon.set_tooltip(Some(text));
+    pub(crate) fn set_tooltip(&self, text: &str) {
+        let _ = self.icon.set_tooltip(Some(text));
     }
 }
 

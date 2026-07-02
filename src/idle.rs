@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 use std::time::Duration;
 
-pub trait IdleReader: Send + Sync {
+pub(crate) trait IdleReader: Send + Sync {
     fn idle_duration(&self) -> Result<Duration>;
 }
 
-pub struct WindowsIdleReader;
+pub(crate) struct WindowsIdleReader;
 
 #[cfg(windows)]
 impl IdleReader for WindowsIdleReader {
@@ -19,7 +19,7 @@ impl IdleReader for WindowsIdleReader {
         };
 
         unsafe {
-            if !GetLastInputInfo(&mut info).as_bool() {
+            if !GetLastInputInfo(&raw mut info).as_bool() {
                 return Err(anyhow!("GetLastInputInfo failed"));
             }
         }

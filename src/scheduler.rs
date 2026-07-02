@@ -26,7 +26,7 @@ fn schtasks(_args: &[&str]) -> std::io::Result<std::process::Output> {
 // ── Elevation detection ───────────────────────────────────────────────────────
 
 /// Returns true if the current process has administrator privileges.
-pub fn is_elevated() -> bool {
+pub(crate) fn is_elevated() -> bool {
     #[cfg(windows)]
     {
         use windows::Win32::UI::Shell::IsUserAnAdmin;
@@ -49,7 +49,7 @@ fn shell_execute_runas(schtasks_args: &str) -> Result<()> {
 
     let verb: Vec<u16> = "runas\0".encode_utf16().collect();
     let file: Vec<u16> = "schtasks.exe\0".encode_utf16().collect();
-    let args: Vec<u16> = format!("{}\0", schtasks_args).encode_utf16().collect();
+    let args: Vec<u16> = format!("{schtasks_args}\0").encode_utf16().collect();
 
     let code = unsafe {
         ShellExecuteW(
@@ -64,14 +64,14 @@ fn shell_execute_runas(schtasks_args: &str) -> Result<()> {
     };
 
     if code <= 32 {
-        bail!("Elevation cancelled or failed (code {})", code);
+        bail!("Elevation cancelled or failed (code {code})");
     }
     Ok(())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-pub fn register() -> Result<()> {
+pub(crate) fn register() -> Result<()> {
     let exe = std::env::current_exe()?;
     let exe_str = exe.to_string_lossy();
 
@@ -85,8 +85,7 @@ pub fn register() -> Result<()> {
     } else {
         #[cfg(windows)]
         shell_execute_runas(&format!(
-            "/create /tn \"{}\" /tr \"{}\" /sc ONLOGON /rl HIGHEST /f",
-            TASK_NAME, exe_str
+            "/create /tn \"{TASK_NAME}\" /tr \"{exe_str}\" /sc ONLOGON /rl HIGHEST /f"
         ))?;
         #[cfg(not(windows))]
         bail!("Not running as administrator");
@@ -94,7 +93,7 @@ pub fn register() -> Result<()> {
     Ok(())
 }
 
-pub fn unregister() -> Result<()> {
+pub(crate) fn unregister() -> Result<()> {
     if is_elevated() {
         let out = schtasks(&["/delete", "/tn", TASK_NAME, "/f"])?;
         if !out.status.success() {
@@ -102,17 +101,16 @@ pub fn unregister() -> Result<()> {
         }
     } else {
         #[cfg(windows)]
-        shell_execute_runas(&format!("/delete /tn \"{}\" /f", TASK_NAME))?;
+        shell_execute_runas(&format!("/delete /tn \"{TASK_NAME}\" /f"))?;
         #[cfg(not(windows))]
         bail!("Not running as administrator");
     }
     Ok(())
 }
 
-pub fn is_registered() -> bool {
+pub(crate) fn is_registered() -> bool {
     schtasks(&["/query", "/tn", TASK_NAME])
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

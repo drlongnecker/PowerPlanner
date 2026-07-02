@@ -1,59 +1,59 @@
 use egui::{self, Align, Color32, Layout, RichText, Sense, Stroke, Ui};
 
-pub mod type_size {
-    pub const SECTION_TITLE: f32 = 18.0;
-    pub const LABEL: f32 = 14.0;
-    pub const HELP: f32 = 12.5;
-    pub const STATUS: f32 = 13.0;
-    pub const NAV: f32 = 14.0;
-    pub const METRIC_VALUE: f32 = 28.0;
-    pub const KICKER: f32 = 10.5;
-    pub const HEADING: f32 = 26.0;
+pub(crate) mod type_size {
+    pub(crate) const SECTION_TITLE: f32 = 18.0;
+    pub(crate) const LABEL: f32 = 14.0;
+    pub(crate) const HELP: f32 = 12.5;
+    pub(crate) const STATUS: f32 = 13.0;
+    pub(crate) const NAV: f32 = 14.0;
+    pub(crate) const METRIC_VALUE: f32 = 28.0;
+    pub(crate) const KICKER: f32 = 10.5;
+    pub(crate) const HEADING: f32 = 26.0;
 }
 
-pub mod spacing {
-    pub const PAGE_X: f32 = 24.0;
-    pub const PAGE_Y: f32 = 18.0;
-    pub const SECTION_GAP: f32 = 12.0;
-    pub const SECTION_PAD_X: f32 = 16.0;
-    pub const SECTION_PAD_Y: f32 = 14.0;
-    pub const ROW_GAP: f32 = 10.0;
-    pub const NAV_ROW_HEIGHT: f32 = 40.0;
-    pub const NAV_ICON: f32 = 18.0;
+pub(crate) mod spacing {
+    pub(crate) const PAGE_X: f32 = 24.0;
+    pub(crate) const PAGE_Y: f32 = 18.0;
+    pub(crate) const SECTION_GAP: f32 = 12.0;
+    pub(crate) const SECTION_PAD_X: f32 = 16.0;
+    pub(crate) const SECTION_PAD_Y: f32 = 14.0;
+    pub(crate) const ROW_GAP: f32 = 10.0;
+    pub(crate) const NAV_ROW_HEIGHT: f32 = 40.0;
+    pub(crate) const NAV_ICON: f32 = 18.0;
 }
 
-pub mod radius {
-    pub const SECTION: f32 = 8.0;
-    pub const CONTROL: f32 = 6.0;
-    pub const PILL: f32 = 999.0;
+pub(crate) mod radius {
+    pub(crate) const SECTION: f32 = 8.0;
+    pub(crate) const CONTROL: f32 = 6.0;
+    pub(crate) const PILL: f32 = 999.0;
 }
 
-pub mod color {
+pub(crate) mod color {
     use egui::Color32;
 
-    pub const ACCENT: Color32 = Color32::from_rgb(0x00, 0xA9, 0xA5);
-    pub const SUCCESS: Color32 = Color32::from_rgb(0x5C, 0xC4, 0x6C);
-    pub const WARNING: Color32 = Color32::from_rgb(0xD2, 0xAA, 0x3C);
-    pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
-    pub const DARK_PANEL: Color32 = Color32::from_rgb(20, 24, 30);
-    pub const DARK_SURFACE: Color32 = Color32::from_rgb(34, 40, 50);
-    pub const DARK_INSET: Color32 = Color32::from_rgb(14, 18, 24);
-    pub const DARK_BORDER: Color32 = Color32::from_rgb(76, 86, 101);
-    pub const LIGHT_PANEL: Color32 = Color32::from_rgb(245, 247, 250);
-    pub const LIGHT_SURFACE: Color32 = Color32::from_rgb(232, 237, 243);
-    pub const LIGHT_INSET: Color32 = Color32::WHITE;
-    pub const LIGHT_BORDER: Color32 = Color32::from_rgb(184, 194, 208);
+    pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x00, 0xA9, 0xA5);
+    pub(crate) const SUCCESS: Color32 = Color32::from_rgb(0x5C, 0xC4, 0x6C);
+    pub(crate) const WARNING: Color32 = Color32::from_rgb(0xD2, 0xAA, 0x3C);
+    pub(crate) const DANGER: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
+    pub(crate) const DARK_PANEL: Color32 = Color32::from_rgb(20, 24, 30);
+    pub(crate) const DARK_SURFACE: Color32 = Color32::from_rgb(34, 40, 50);
+    pub(crate) const DARK_INSET: Color32 = Color32::from_rgb(14, 18, 24);
+    pub(crate) const DARK_BORDER: Color32 = Color32::from_rgb(76, 86, 101);
+    pub(crate) const LIGHT_PANEL: Color32 = Color32::from_rgb(245, 247, 250);
+    pub(crate) const LIGHT_SURFACE: Color32 = Color32::from_rgb(232, 237, 243);
+    pub(crate) const LIGHT_INSET: Color32 = Color32::WHITE;
+    pub(crate) const LIGHT_BORDER: Color32 = Color32::from_rgb(184, 194, 208);
 }
 
 #[derive(Clone, Copy)]
-pub enum StatusKind {
+pub(crate) enum StatusKind {
     Success,
     Muted,
     Warning,
 }
 
 #[derive(Clone, Copy)]
-pub enum NavIcon {
+pub(crate) enum NavIcon {
     Dashboard,
     Power,
     Apps,
@@ -61,7 +61,7 @@ pub enum NavIcon {
     History,
 }
 
-pub fn enabled_status_text(enabled: bool) -> &'static str {
+pub(crate) fn enabled_status_text(enabled: bool) -> &'static str {
     if enabled {
         "On"
     } else {
@@ -69,7 +69,7 @@ pub fn enabled_status_text(enabled: bool) -> &'static str {
     }
 }
 
-pub fn registered_status_text(registered: bool) -> &'static str {
+pub(crate) fn registered_status_text(registered: bool) -> &'static str {
     if registered {
         "Registered"
     } else {
@@ -77,11 +77,11 @@ pub fn registered_status_text(registered: bool) -> &'static str {
     }
 }
 
-pub fn section(ui: &mut Ui, title: &str, description: &str, add_contents: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, description: &str, add_contents: impl FnOnce(&mut Ui)) {
     section_with_header_action(ui, title, description, |_| {}, add_contents);
 }
 
-pub fn section_with_header_action(
+pub(crate) fn section_with_header_action(
     ui: &mut Ui,
     title: &str,
     description: &str,
@@ -116,17 +116,17 @@ pub fn section_with_header_action(
         });
 }
 
-pub fn setting_label(ui: &mut Ui, label: &str, description: &str) {
+pub(crate) fn setting_label(ui: &mut Ui, label: &str, description: &str) {
     ui.label(RichText::new(label).size(type_size::LABEL).strong());
     ui.add_space(2.0);
     ui.label(RichText::new(description).weak().size(type_size::HELP));
 }
 
-pub fn status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response {
+pub(crate) fn status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response {
     status_badge_sized(ui, text, kind, false)
 }
 
-pub fn compact_status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response {
+pub(crate) fn compact_status_badge(ui: &mut Ui, text: &str, kind: StatusKind) -> egui::Response {
     status_badge_sized(ui, text, kind, true)
 }
 
@@ -178,12 +178,12 @@ fn status_badge_sized(ui: &mut Ui, text: &str, kind: StatusKind, compact: bool) 
     response
 }
 
-pub fn subsection_heading(ui: &mut Ui, title: &str) {
+pub(crate) fn subsection_heading(ui: &mut Ui, title: &str) {
     ui.label(RichText::new(title).size(type_size::LABEL).strong());
 }
 
 /// Sidebar wordmark: "Power" light + "Planner" strong, per the brand lockup.
-pub fn wordmark(ui: &mut Ui) {
+pub(crate) fn wordmark(ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.label(RichText::new("Power").size(type_size::HEADING));
@@ -191,7 +191,7 @@ pub fn wordmark(ui: &mut Ui) {
     });
 }
 
-pub fn tabs<T: Copy + PartialEq>(ui: &mut Ui, selected: &mut T, labels: &[(T, &str)]) {
+pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut Ui, selected: &mut T, labels: &[(T, &str)]) {
     ui.horizontal(|ui| {
         for (value, label) in labels {
             ui.selectable_value(selected, *value, *label);
@@ -199,7 +199,7 @@ pub fn tabs<T: Copy + PartialEq>(ui: &mut Ui, selected: &mut T, labels: &[(T, &s
     });
 }
 
-pub fn nav_item(ui: &mut Ui, label: &str, icon: NavIcon, selected: bool) -> egui::Response {
+pub(crate) fn nav_item(ui: &mut Ui, label: &str, icon: NavIcon, selected: bool) -> egui::Response {
     let desired = egui::vec2(ui.available_width(), spacing::NAV_ROW_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
     let visuals = ui.visuals();
@@ -251,7 +251,7 @@ pub fn nav_item(ui: &mut Ui, label: &str, icon: NavIcon, selected: bool) -> egui
     response
 }
 
-pub fn enabled_badge_button(ui: &mut Ui, enabled: bool) -> egui::Response {
+pub(crate) fn enabled_badge_button(ui: &mut Ui, enabled: bool) -> egui::Response {
     let text = enabled_status_text(enabled);
     let accent = if enabled {
         color::SUCCESS
@@ -291,14 +291,14 @@ pub fn enabled_badge_button(ui: &mut Ui, enabled: bool) -> egui::Response {
     response
 }
 
-pub fn command_button(ui: &mut Ui, label: &str) -> egui::Response {
+pub(crate) fn command_button(ui: &mut Ui, label: &str) -> egui::Response {
     ui.add_sized(
         [96.0, 30.0],
         egui::Button::new(RichText::new(label).size(type_size::STATUS)).rounding(radius::CONTROL),
     )
 }
 
-pub fn accent_command_button(ui: &mut Ui, label: &str) -> egui::Response {
+pub(crate) fn accent_command_button(ui: &mut Ui, label: &str) -> egui::Response {
     ui.add_sized(
         [76.0, 30.0],
         egui::Button::new(
@@ -311,7 +311,7 @@ pub fn accent_command_button(ui: &mut Ui, label: &str) -> egui::Response {
     )
 }
 
-pub fn icon_button(ui: &mut Ui, label: &str, tooltip: &str, accent: Color32) -> egui::Response {
+pub(crate) fn icon_button(ui: &mut Ui, label: &str, tooltip: &str, accent: Color32) -> egui::Response {
     let button = egui::Button::new(
         RichText::new(label)
             .size(type_size::LABEL)
@@ -408,7 +408,7 @@ fn draw_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color
 // ── DS primitives ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum CalloutTone {
+pub(crate) enum CalloutTone {
     Neutral,
     #[allow(dead_code)]
     Accent,
@@ -417,7 +417,7 @@ pub enum CalloutTone {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum ChipTone {
+pub(crate) enum ChipTone {
     Muted,
     #[allow(dead_code)]
     Accent,
@@ -433,7 +433,7 @@ fn blend_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-pub fn callout(
+pub(crate) fn callout(
     ui: &mut Ui,
     title: Option<&str>,
     tone: CalloutTone,
@@ -473,7 +473,7 @@ pub fn callout(
     });
 }
 
-pub fn metric_tile(ui: &mut Ui, label: &str, value: &str, accent: bool) {
+pub(crate) fn metric_tile(ui: &mut Ui, label: &str, value: &str, accent: bool) {
     let frame = {
         let visuals = ui.visuals();
         egui::Frame::none()
@@ -507,7 +507,7 @@ pub fn metric_tile(ui: &mut Ui, label: &str, value: &str, accent: bool) {
     });
 }
 
-pub fn info_row(ui: &mut Ui, label: &str, value: &str, mono: bool) {
+pub(crate) fn info_row(ui: &mut Ui, label: &str, value: &str, mono: bool) {
     let value_font = if mono {
         egui::FontId::monospace(type_size::LABEL)
     } else {
@@ -534,7 +534,7 @@ pub fn info_row(ui: &mut Ui, label: &str, value: &str, mono: bool) {
     });
 }
 
-pub fn chip(ui: &mut Ui, text: &str, tone: ChipTone) -> egui::Response {
+pub(crate) fn chip(ui: &mut Ui, text: &str, tone: ChipTone) -> egui::Response {
     let weak_text = ui.visuals().weak_text_color();
     let text_color = match tone {
         ChipTone::Muted => weak_text,
@@ -571,7 +571,7 @@ pub fn chip(ui: &mut Ui, text: &str, tone: ChipTone) -> egui::Response {
     response
 }
 
-pub fn plan_pill(ui: &mut Ui, plan_name: &str) -> egui::Response {
+pub(crate) fn plan_pill(ui: &mut Ui, plan_name: &str) -> egui::Response {
     let lower = plan_name.to_lowercase();
     let weak_text = ui.visuals().weak_text_color();
     let (text_color, mix): (Color32, f32) = if lower.contains("ultimate") {

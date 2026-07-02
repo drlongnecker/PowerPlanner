@@ -17,7 +17,7 @@ use std::sync::{mpsc, Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use sysinfo::System as SysInfo;
 
-const DASHBOARD_CPU_HISTORY_WINDOW: Duration = Duration::from_secs(15 * 60);
+const DASHBOARD_CPU_HISTORY_WINDOW: Duration = Duration::from_mins(15);
 const DASHBOARD_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 
 fn install_ultimate_performance(
@@ -73,7 +73,11 @@ fn install_ultimate_performance_with_save(
     }
 
     let previous_guid = state.config.general.performance_plan_guid.clone();
-    state.config.general.performance_plan_guid = plan.guid.clone();
+    state
+        .config
+        .general
+        .performance_plan_guid
+        .clone_from(&plan.guid);
     if let Err(err) = save_config(&state.config) {
         state.config.general.performance_plan_guid = previous_guid;
         return Err(cleanup(format!(
@@ -88,9 +92,11 @@ fn install_ultimate_performance_with_save(
             "Ultimate Performance was configured, but Windows could not activate it: {err}"
         );
         if let Some(rollback_error) = rollback_error {
-            message.push_str(&format!(
+            use std::fmt::Write as _;
+            let _ = write!(
+                message,
                 ". Restoring the previous PowerPlanner selection also failed: {rollback_error}"
-            ));
+            );
         }
         return Err(cleanup(message));
     }
@@ -102,7 +108,7 @@ fn install_ultimate_performance_with_save(
         }
         plans
     });
-    state.current_plan_guid = plan.guid.clone();
+    state.current_plan_guid.clone_from(&plan.guid);
     state.forced_plan_guid = Some(plan.guid.clone());
     Ok(plan)
 }
@@ -125,7 +131,7 @@ struct PlanDecision {
     trigger: String,
 }
 
-pub struct MonitorState {
+pub(crate) struct MonitorState {
     pub config: Config,
     pub last_match_at: Option<Instant>,
     pub last_match_trigger: Option<String>,
@@ -144,7 +150,7 @@ pub struct MonitorState {
 }
 
 impl MonitorState {
-    pub fn new(config: Config, initial_guid: String, available_plans: Vec<PowerPlan>) -> Self {
+    pub(crate) fn new(config: Config, initial_guid: String, available_plans: Vec<PowerPlan>) -> Self {
         let watchlist_lower = config
             .watchlist
             .processes
@@ -210,8 +216,7 @@ impl MonitorState {
     fn cpu_is_quiet(&self, now: Instant) -> bool {
         let _ = now;
         self.cpu_average_percent()
-            .map(|average| average <= self.config.general.cpu_average_threshold_percent as f32)
-            .unwrap_or(false)
+            .is_some_and(|average| average <= self.config.general.cpu_average_threshold_percent as f32)
     }
 
     fn cpu_average_percent(&self) -> Option<f32> {
@@ -250,9 +255,7 @@ impl MonitorState {
     fn plan_name_for_guid(&self, guid: &str) -> String {
         self.available_plans
             .iter()
-            .find(|plan| plan.guid == guid)
-            .map(|plan| plan.name.clone())
-            .unwrap_or_else(|| guid.to_string())
+            .find(|plan| plan.guid == guid).map_or_else(|| guid.to_string(), |plan| plan.name.clone())
     }
 
     fn current_trigger_description(
@@ -270,17 +273,14 @@ impl MonitorState {
         if self.last_match_at.is_some()
             && self
                 .last_match_at
-                .map(|last| {
+                .is_some_and(|last| {
                     now.duration_since(last)
                         < Duration::from_secs(self.config.general.hold_performance_seconds)
                 })
-                .unwrap_or(false)
         {
             return self
                 .last_match_trigger
-                .as_ref()
-                .map(|trigger| format!("{} (holding)", trigger))
-                .unwrap_or_else(|| "hold timer".to_string());
+                .as_ref().map_or_else(|| "hold timer".to_string(), |trigger| format!("{trigger} (holding)"));
         }
         if idle_for < Duration::from_secs(self.config.general.idle_wait_seconds) {
             return "input resumed".to_string();
@@ -301,9 +301,7 @@ impl MonitorState {
         frequency: CpuFrequencySample,
         cpu_base_mhz: Option<u32>,
     ) -> Option<CpuHistoryPoint> {
-        let Some(average_percent) = self.cpu_average_percent() else {
-            return None;
-        };
+        let average_percent = self.cpu_average_percent()?;
 
         if let Some(last_at) = self.last_dashboard_sample_at {
             if now.duration_since(last_at) < DASHBOARD_SAMPLE_INTERVAL {
@@ -373,7 +371,7 @@ impl MonitorState {
             estimated_watts,
             baseline_watts,
             DASHBOARD_SAMPLE_INTERVAL,
-            rate_provider.current_rate(),
+            &rate_provider.current_rate(),
         );
 
         Some(CpuHistoryEnergyEstimate {
@@ -487,9 +485,7 @@ impl MonitorState {
                         guid: self.config.general.performance_plan_guid.clone(),
                         trigger: self
                             .last_match_trigger
-                            .as_ref()
-                            .map(|trigger| format!("{} (holding)", trigger))
-                            .unwrap_or_else(|| "hold timer".to_string()),
+                            .as_ref().map_or_else(|| "hold timer".to_string(), |trigger| format!("{trigger} (holding)")),
                     };
                 }
             }
@@ -542,7 +538,9 @@ impl MonitorState {
     }
 }
 
-pub fn run(
+// Args are owned (not borrowed) because this loop runs for the lifetime of the monitor thread.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn run(
     config: Config,
     app_state: Arc<RwLock<AppState>>,
     rx: mpsc::Receiver<MonitorCommand>,
@@ -552,15 +550,13 @@ pub fn run(
 ) {
     let idle_reader = WindowsIdleReader;
     let initial_guid = power
-        .get_active_plan()
-        .map(|p| p.guid)
-        .unwrap_or_else(|_| config.general.standard_plan_guid.clone());
+        .get_active_plan().map_or_else(|_| config.general.standard_plan_guid.clone(), |p| p.guid);
 
     let available_plans = app_state.read().unwrap().available_plans.clone();
     let mut state = MonitorState::new(config, initial_guid, available_plans);
     let mut cpu_info = power.get_cpu_info().ok();
     let mut plan_processor_settings =
-        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
+        refresh_plan_processor_settings(&*power, &state.config);
     let mut last_sanity = Instant::now();
 
     loop {
@@ -582,9 +578,7 @@ pub fn run(
                         let plan_name = state
                             .available_plans
                             .iter()
-                            .find(|p| p.guid == guid)
-                            .map(|p| p.name.clone())
-                            .unwrap_or_else(|| guid.clone());
+                            .find(|p| p.guid == guid).map_or_else(|| guid.clone(), |p| p.name.clone());
                         let (bat_on, bat_pct) = {
                             let s = app_state.read().unwrap();
                             (s.battery.on_battery, s.battery.percent)
@@ -614,7 +608,7 @@ pub fn run(
                     state.config = cfg;
                     state.rebuild_watchlist_lower();
                     plan_processor_settings =
-                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
+                        refresh_plan_processor_settings(&*power, &state.config);
                 }
                 MonitorCommand::ApplyProcessorPreset {
                     guid,
@@ -622,14 +616,13 @@ pub fn run(
                 } => {
                     if let Err(err) = power.apply_processor_preset(&guid, recommendation) {
                         app_state.write().unwrap().last_error = Some(format!(
-                            "Failed to update high-performance settings: {}",
-                            err
+                            "Failed to update high-performance settings: {err}"
                         ));
                     } else if state.current_plan_guid == guid {
                         let _ = power.set_active_plan(&guid);
                     }
                     plan_processor_settings =
-                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
+                        refresh_plan_processor_settings(&*power, &state.config);
                 }
                 MonitorCommand::InstallUltimatePerformance { recommendation } => {
                     app_state.write().unwrap().ultimate_performance_setup =
@@ -637,10 +630,11 @@ pub fn run(
                     match install_ultimate_performance(&*power, &mut state, recommendation) {
                         Ok(plan) => {
                             plan_processor_settings =
-                                refresh_plan_processor_settings(&*power, &state.config)
-                                    .unwrap_or_default();
+                                refresh_plan_processor_settings(&*power, &state.config);
                             let mut shared = app_state.write().unwrap();
-                            shared.available_plans = state.available_plans.clone();
+                            shared
+                                .available_plans
+                                .clone_from(&state.available_plans);
                             shared.current_plan = Some(plan.clone());
                             shared.ultimate_performance_setup =
                                 UltimatePerformanceSetupState::Succeeded(plan);
@@ -656,12 +650,12 @@ pub fn run(
                 }
                 MonitorCommand::RefreshPlans => {
                     if let Ok(plans) = power.enumerate_plans() {
-                        state.available_plans = plans.clone();
+                        state.available_plans.clone_from(&plans);
                         app_state.write().unwrap().available_plans = plans;
                     }
                     cpu_info = power.get_cpu_info().ok();
                     plan_processor_settings =
-                        refresh_plan_processor_settings(&*power, &state.config).unwrap_or_default();
+                        refresh_plan_processor_settings(&*power, &state.config);
                 }
                 MonitorCommand::ForceConfiguredStandard
                 | MonitorCommand::ForceConfiguredPerformance => unreachable!(),
@@ -717,9 +711,7 @@ pub fn run(
                 let plan_name = state
                     .available_plans
                     .iter()
-                    .find(|p| p.guid == target_guid)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| target_guid.clone());
+                    .find(|p| p.guid == target_guid).map_or_else(|| target_guid.clone(), |p| p.name.clone());
 
                 let event = PowerEvent {
                     ts: chrono::Local::now(),
@@ -733,10 +725,10 @@ pub fn run(
 
                 let mut s = app_state.write().unwrap();
                 s.push_event(event);
-                state.current_plan_guid = target_guid.clone();
+                state.current_plan_guid.clone_from(&target_guid);
             } else {
                 app_state.write().unwrap().last_error =
-                    Some(format!("Failed to switch to plan {}", target_guid));
+                    Some(format!("Failed to switch to plan {target_guid}"));
             }
         }
 
@@ -797,7 +789,7 @@ pub fn run(
             s.hold_remaining_secs = hold_remaining;
             s.idle_for_secs = Some(idle_for.as_secs_f32());
             s.cpu_average_percent = cpu_average_percent;
-            s.cpu_info = cpu_info.clone();
+            s.cpu_info.clone_from(&cpu_info);
             s.cpu_frequency = cpu_frequency;
             s.turbo_rescue_state = state.turbo_rescue_status_text(
                 turbo_rescue_ready,
@@ -844,21 +836,21 @@ fn get_running_processes(sys: &mut SysInfo) -> Vec<RunningProcess> {
         .filter_map(|p| {
             let name = p.name().to_string();
             if seen.insert(name.to_lowercase()) {
-                let path = p.exe().and_then(|e| e.to_str()).map(|s| s.to_string());
+                let path = p.exe().and_then(|e| e.to_str()).map(std::string::ToString::to_string);
                 Some(RunningProcess { name, path })
             } else {
                 None
             }
         })
         .collect();
-    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result.sort_by_key(|a| a.name.to_lowercase());
     result
 }
 
 fn refresh_plan_processor_settings(
     power: &dyn PowerApi,
     config: &Config,
-) -> Result<BTreeMap<String, Option<crate::types::PlanProcessorSettings>>, ()> {
+) -> BTreeMap<String, Option<crate::types::PlanProcessorSettings>> {
     let mut result = BTreeMap::new();
     for guid in [
         &config.general.standard_plan_guid,
@@ -870,10 +862,11 @@ fn refresh_plan_processor_settings(
         }
         result.insert(guid.clone(), power.read_plan_processor_settings(guid).ok());
     }
-    Ok(result)
+    result
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::config::Config;
@@ -1086,7 +1079,7 @@ mod tests {
                 false,
                 false,
                 base + Duration::from_secs(61),
-                Duration::from_secs(120)
+                Duration::from_mins(2)
             ),
             "standard-guid"
         );
@@ -1106,7 +1099,7 @@ mod tests {
                 false,
                 false,
                 base + Duration::from_secs(61),
-                Duration::from_secs(120)
+                Duration::from_mins(2)
             ),
             "standard-guid"
         );
@@ -1180,7 +1173,7 @@ mod tests {
             false,
             false,
             base + Duration::from_secs(16),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             ready,
         );
 
@@ -1198,7 +1191,7 @@ mod tests {
             false,
             true,
             base + Duration::from_secs(61),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             true,
         );
 
@@ -1215,7 +1208,7 @@ mod tests {
             false,
             false,
             base + Duration::from_secs(61),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             true,
         );
 
@@ -1239,7 +1232,7 @@ mod tests {
         let s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
 
         assert!(!s.input_is_idle_enough(Duration::from_secs(599)));
-        assert!(s.input_is_idle_enough(Duration::from_secs(600)));
+        assert!(s.input_is_idle_enough(Duration::from_mins(10)));
     }
 
     #[test]
@@ -1317,8 +1310,8 @@ mod tests {
             None,
         );
 
-        let sixteen_minutes_later = base + Duration::from_secs(16 * 60);
-        s.record_cpu_sample(sixteen_minutes_later - Duration::from_secs(30), 7.0);
+        let sixteen_minutes_later = base + Duration::from_mins(16);
+        s.record_cpu_sample(sixteen_minutes_later.checked_sub(Duration::from_secs(30)).unwrap(), 7.0);
         s.record_cpu_sample(sixteen_minutes_later, 9.0);
         s.record_cpu_history(
             sixteen_minutes_later,
@@ -1430,7 +1423,7 @@ mod tests {
             None,
         );
         let third = s.record_cpu_history(
-            base + Duration::from_secs(60),
+            base + Duration::from_mins(1),
             "standard",
             CpuFrequencySample::default(),
             None,

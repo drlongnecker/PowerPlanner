@@ -6,6 +6,8 @@ use egui::{self, Align2, Color32, Pos2, RichText, Sense, Shape, Stroke, Ui};
 use std::sync::mpsc;
 
 const POWER_GRAPH_HEIGHT: f32 = 422.0;
+const DETAILS_WIDTH: f32 = 300.0;
+const GAP: f32 = design::spacing::SECTION_GAP;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PowerUsageSummary {
@@ -17,72 +19,7 @@ struct PowerUsageSummary {
     estimated_savings_usd: f64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::{CpuHistoryEnergyEstimate, CpuHistoryPlanKind, CpuHistoryPoint};
-    use chrono::{Duration, Local};
-
-    #[test]
-    fn power_usage_summary_totals_estimated_cost_and_savings() {
-        let now = Local::now();
-        let history = vec![
-            point(now, 10.0, 900, 18.0, 0.0000225, 0.00013375),
-            point(
-                now + Duration::seconds(30),
-                15.0,
-                3500,
-                32.0,
-                0.00004,
-                0.00011625,
-            ),
-        ];
-
-        let summary = build_power_usage_summary(&history).unwrap();
-
-        assert_eq!(summary.sample_count, 2);
-        assert_eq!(summary.latest_watts, 32.0);
-        assert_eq!(summary.average_watts, 25.0);
-        assert_eq!(summary.peak_watts, 32.0);
-        assert!((summary.estimated_cost_usd - 0.0000625).abs() < 0.0000001);
-        assert!((summary.estimated_savings_usd - 0.00025).abs() < 0.0000001);
-    }
-
-    #[test]
-    fn format_money_uses_dollars_for_sub_cent_values() {
-        assert_eq!(format_money(0.000625), "$0.001");
-        assert_eq!(format_money(0.0125), "$0.013");
-    }
-
-    fn point(
-        ts: chrono::DateTime<Local>,
-        average_percent: f32,
-        current_mhz: u32,
-        estimated_watts: f64,
-        estimated_cost_usd: f64,
-        estimated_savings_usd: f64,
-    ) -> CpuHistoryPoint {
-        CpuHistoryPoint {
-            ts,
-            average_percent,
-            current_mhz: Some(current_mhz),
-            base_mhz: Some(3500),
-            plan_kind: CpuHistoryPlanKind::Standard,
-            plan_name: "Balanced".into(),
-            trigger: "standard".into(),
-            energy: Some(CpuHistoryEnergyEstimate {
-                estimated_watts,
-                estimated_kwh: 0.00015,
-                estimated_cost_usd,
-                baseline_watts: 125.0,
-                baseline_cost_usd: 0.00015625,
-                estimated_savings_usd,
-            }),
-        }
-    }
-}
-
-pub fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<MonitorCommand>) {
+pub(crate) fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<MonitorCommand>) {
     let mut changed = false;
     let mut usage_window_minutes = config.general.usage_trend_window_minutes;
     let mut range_mode = config.general.power_usage_range_mode;
@@ -119,8 +56,6 @@ pub fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<MonitorCommand
                 render_callouts(ui, &history);
                 ui.add_space(design::spacing::SECTION_GAP);
                 let available = ui.available_width();
-                const DETAILS_WIDTH: f32 = 300.0;
-                const GAP: f32 = design::spacing::SECTION_GAP;
                 if available >= DETAILS_WIDTH + GAP + 400.0 {
                     let chart_width = available - GAP - DETAILS_WIDTH;
                     let height_id = ui.id().with("details_height");
@@ -174,7 +109,7 @@ fn load_power_usage_history(config: &Config) -> Vec<CpuHistoryPoint> {
     match config.general.power_usage_range_mode {
         PowerUsageRangeMode::RecentMinutes => db::query_dashboard_samples_recent(
             &conn,
-            config.general.usage_trend_window_minutes as i64,
+            config.general.usage_trend_window_minutes.cast_signed(),
         )
         .unwrap_or_default(),
         PowerUsageRangeMode::AllRetained => {
@@ -213,7 +148,7 @@ fn usage_window_selector(ui: &mut Ui, usage_window_minutes: &mut u64, changed: &
         .show_ui(ui, |ui| {
             for minutes in [15_u64, 30, 60, 90, 120] {
                 if ui
-                    .selectable_value(usage_window_minutes, minutes, format!("{}m", minutes))
+                    .selectable_value(usage_window_minutes, minutes, format!("{minutes}m"))
                     .changed()
                 {
                     *changed = true;
@@ -272,7 +207,7 @@ fn render_callouts(ui: &mut Ui, history: &[CpuHistoryPoint]) {
                 for (label, value) in tiles {
                     design::metric_tile(ui, label, value, false);
                     index += 1;
-                    if index % columns == 0 {
+                    if index.is_multiple_of(columns) {
                         ui.end_row();
                     }
                 }
@@ -355,7 +290,7 @@ fn render_power_usage_chart(ui: &mut Ui, history: &[CpuHistoryPoint], height: f3
         painter.text(
             Pos2::new(plot_rect.left() - 8.0, y),
             Align2::RIGHT_CENTER,
-            format!("{:.0}", watts),
+            format!("{watts:.0}"),
             egui::TextStyle::Small.resolve(ui.style()),
             visuals.weak_text_color(),
         );
@@ -603,7 +538,7 @@ fn nice_watt_ceiling(watts: f64) -> f64 {
 }
 
 fn format_money(value: f64) -> String {
-    format!("${:.3}", value)
+    format!("${value:.3}")
 }
 
 fn format_speed_pair(point: &CpuHistoryPoint) -> String {
@@ -620,6 +555,72 @@ fn format_mhz(mhz: u32) -> String {
     if mhz >= 1000 {
         format!("{:.2} GHz", mhz as f32 / 1000.0)
     } else {
-        format!("{} MHz", mhz)
+        format!("{mhz} MHz")
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+    use crate::types::{CpuHistoryEnergyEstimate, CpuHistoryPlanKind, CpuHistoryPoint};
+    use chrono::{Duration, Local};
+
+    #[test]
+    fn power_usage_summary_totals_estimated_cost_and_savings() {
+        let now = Local::now();
+        let history = vec![
+            point(now, 10.0, 900, 18.0, 0.000_022_5, 0.000_133_75),
+            point(
+                now + Duration::seconds(30),
+                15.0,
+                3500,
+                32.0,
+                0.000_04,
+                0.000_116_25,
+            ),
+        ];
+
+        let summary = build_power_usage_summary(&history).unwrap();
+
+        assert_eq!(summary.sample_count, 2);
+        assert_eq!(summary.latest_watts, 32.0);
+        assert_eq!(summary.average_watts, 25.0);
+        assert_eq!(summary.peak_watts, 32.0);
+        assert!((summary.estimated_cost_usd - 0.000_062_5).abs() < 0.000_000_1);
+        assert!((summary.estimated_savings_usd - 0.000_25).abs() < 0.000_000_1);
+    }
+
+    #[test]
+    fn format_money_uses_dollars_for_sub_cent_values() {
+        assert_eq!(format_money(0.000_625), "$0.001");
+        assert_eq!(format_money(0.0125), "$0.013");
+    }
+
+    fn point(
+        ts: chrono::DateTime<Local>,
+        average_percent: f32,
+        current_mhz: u32,
+        estimated_watts: f64,
+        estimated_cost_usd: f64,
+        estimated_savings_usd: f64,
+    ) -> CpuHistoryPoint {
+        CpuHistoryPoint {
+            ts,
+            average_percent,
+            current_mhz: Some(current_mhz),
+            base_mhz: Some(3500),
+            plan_kind: CpuHistoryPlanKind::Standard,
+            plan_name: "Balanced".into(),
+            trigger: "standard".into(),
+            energy: Some(CpuHistoryEnergyEstimate {
+                estimated_watts,
+                estimated_kwh: 0.000_15,
+                estimated_cost_usd,
+                baseline_watts: 125.0,
+                baseline_cost_usd: 0.000_156_25,
+                estimated_savings_usd,
+            }),
+        }
     }
 }

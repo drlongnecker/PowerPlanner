@@ -1,13 +1,13 @@
-pub mod dashboard;
-pub mod design;
-pub mod history;
-pub mod power_usage;
-pub mod settings;
-pub mod watched;
+pub(crate) mod dashboard;
+pub(crate) mod design;
+pub(crate) mod history;
+pub(crate) mod power_usage;
+pub(crate) mod settings;
+pub(crate) mod watched;
 
 use egui::{self, Align, Layout, Ui};
 
-pub fn padded_page(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+pub(crate) fn padded_page(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     let content_width = (ui.available_width() - design::spacing::PAGE_X * 2.0).max(320.0);
     let content_height = ui.available_height().max(0.0);
     ui.horizontal(|ui| {
@@ -25,7 +25,7 @@ pub fn padded_page(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 }
 
 #[derive(Clone, PartialEq, Default)]
-pub enum Nav {
+pub(crate) enum Nav {
     #[default]
     Dashboard,
     PowerUsage,
@@ -35,6 +35,7 @@ pub enum Nav {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::design;
 

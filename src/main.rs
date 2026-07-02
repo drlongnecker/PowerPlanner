@@ -17,17 +17,18 @@ mod ui;
 use power::{PowerApi, WindowsPowerApi};
 use std::sync::{mpsc, Arc, OnceLock, RwLock};
 
+const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
+
 fn main() {
     setup_logging();
     log::info!("PowerPlanner starting");
 
     // Step 1: Relocate check
     if let relocate::RelocateAction::Needed { suggested } = relocate::check() {
-        if prompt_relocate(&suggested) {
-            if relocate::copy_exe_to(&suggested).is_ok() {
+        if prompt_relocate(&suggested)
+            && relocate::copy_exe_to(&suggested).is_ok() {
                 let _ = relocate::launch_detached(&suggested);
             }
-        }
         return;
     }
 
@@ -88,9 +89,7 @@ fn main() {
     // Step 9: Log startup event
     if let Ok(conn) = db::open() {
         let plan_name = power
-            .get_active_plan()
-            .map(|p| p.name)
-            .unwrap_or_else(|_| "Unknown".into());
+            .get_active_plan().map_or_else(|_| "Unknown".into(), |p| p.name);
         let _ = db::insert_event(
             &conn,
             &types::PowerEvent {
@@ -114,7 +113,6 @@ fn main() {
     };
 
     // Step 11: Run egui
-    const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
     let icon = image::load_from_memory(LOGO_PNG).ok().map(|img| {
         let rgba = img.into_rgba8();
         let (width, height) = rgba.dimensions();
@@ -173,7 +171,7 @@ fn setup_logging() {
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
                 record.level(),
                 message
-            ))
+            ));
         })
         .level(log::LevelFilter::Info)
         .chain(std::io::stdout())

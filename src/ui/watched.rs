@@ -9,7 +9,7 @@ const ACTION_COLUMN_WIDTH: f32 = 38.0;
 const NAME_COLUMN_WIDTH: f32 = 180.0;
 const WATCH_ROW_HEIGHT: f32 = 32.0;
 
-pub fn render(
+pub(crate) fn render(
     ui: &mut Ui,
     state: &AppState,
     tx: &mpsc::Sender<MonitorCommand>,
@@ -170,7 +170,7 @@ fn add_by_name(name: &str, config: &mut Config, tx: &mpsc::Sender<MonitorCommand
     let normalized = if name.to_lowercase().ends_with(".exe") {
         name.to_string()
     } else {
-        format!("{}.exe", name)
+        format!("{name}.exe")
     };
     if !config.watchlist.processes.contains(&normalized) {
         config.watchlist.processes.push(normalized);

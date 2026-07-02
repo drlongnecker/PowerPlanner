@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 #[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
 
-pub trait PowerApi: Send + Sync {
+pub(crate) trait PowerApi: Send + Sync {
     fn enumerate_plans(&self) -> Result<Vec<PowerPlan>>;
     fn duplicate_ultimate_performance(&self) -> Result<PowerPlan>;
     fn delete_plan(&self, guid: &str) -> Result<()>;
@@ -24,7 +24,7 @@ pub trait PowerApi: Send + Sync {
     ) -> Result<()>;
 }
 
-pub struct WindowsPowerApi;
+pub(crate) struct WindowsPowerApi;
 
 #[cfg(windows)]
 fn powercfg(args: &[&str]) -> Result<std::process::Output> {
@@ -93,7 +93,7 @@ impl PowerApi for WindowsPowerApi {
         use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
         unsafe {
             let mut s = SYSTEM_POWER_STATUS::default();
-            GetSystemPowerStatus(&mut s)?;
+            GetSystemPowerStatus(&raw mut s)?;
             Ok(BatteryStatus {
                 on_battery: s.ACLineStatus == 0,
                 percent: if s.BatteryLifePercent == 255 {
@@ -130,7 +130,7 @@ impl PowerApi for WindowsPowerApi {
     }
 
     fn read_plan_processor_settings(&self, guid: &str) -> Result<PlanProcessorSettings> {
-        read_plan_processor_settings(guid)
+        Ok(read_plan_processor_settings(guid))
     }
 
     fn apply_processor_preset(
@@ -156,7 +156,7 @@ fn parse_cpu_efficiency_classes(data: &[u8]) -> Result<Vec<CpuEfficiencyClass>> 
 
         let size = u32::from_le_bytes(remaining[0..4].try_into().unwrap()) as usize;
         if size < HEADER_SIZE {
-            bail!("CPU set information record has invalid size {}", size);
+            bail!("CPU set information record has invalid size {size}");
         }
         if size > remaining.len() {
             bail!(
@@ -212,7 +212,7 @@ fn read_cpu_efficiency_classes() -> Result<Vec<CpuEfficiencyClass>> {
 
     let mut required = 0_u32;
     let sizing_result =
-        unsafe { GetSystemCpuSetInformation(None, 0, &mut required, HANDLE::default(), 0) };
+        unsafe { GetSystemCpuSetInformation(None, 0, &raw mut required, HANDLE::default(), 0) };
     if required == 0 {
         if sizing_result.as_bool() {
             return Ok(Vec::new());
@@ -237,7 +237,7 @@ fn read_cpu_efficiency_classes() -> Result<Vec<CpuEfficiencyClass>> {
             GetSystemCpuSetInformation(
                 Some(buffer.as_mut_ptr().cast()),
                 buffer_bytes,
-                &mut returned,
+                &raw mut returned,
                 HANDLE::default(),
                 0,
             )
@@ -245,9 +245,7 @@ fn read_cpu_efficiency_classes() -> Result<Vec<CpuEfficiencyClass>> {
         if result.as_bool() {
             if returned > buffer_bytes {
                 bail!(
-                    "GetSystemCpuSetInformation returned {} bytes for a {} byte buffer",
-                    returned,
-                    buffer_bytes
+                    "GetSystemCpuSetInformation returned {returned} bytes for a {buffer_bytes} byte buffer"
                 );
             }
             let bytes = unsafe {
@@ -282,8 +280,8 @@ fn parse_base_mhz_from_brand(brand: &str) -> Option<u32> {
 }
 
 #[cfg(windows)]
-fn guid_from_string(guid: &str) -> Result<windows::core::GUID> {
-    windows::core::GUID::try_from(guid).map_err(|_| anyhow::anyhow!("Invalid GUID {}", guid))
+fn guid_from_string(guid: &str) -> windows::core::GUID {
+    windows::core::GUID::from(guid)
 }
 
 #[cfg(windows)]
@@ -315,7 +313,7 @@ fn duplicate_ultimate_performance() -> Result<PowerPlan> {
 
     unsafe {
         let mut raw: *mut windows::core::GUID = std::ptr::null_mut();
-        let err = PowerDuplicateScheme(HKEY::default(), &ULTIMATE_PERFORMANCE_TEMPLATE, &mut raw);
+        let err = PowerDuplicateScheme(HKEY::default(), &ULTIMATE_PERFORMANCE_TEMPLATE, &raw mut raw);
         if err.0 != 0 {
             bail!("PowerDuplicateScheme failed: {}", err.0);
         }
@@ -337,9 +335,9 @@ fn delete_plan(guid: &str) -> Result<()> {
     use windows::Win32::System::Power::PowerDeleteScheme;
     use windows::Win32::System::Registry::HKEY;
 
-    let scheme = guid_from_string(guid)?;
+    let scheme = guid_from_string(guid);
     unsafe {
-        let err = PowerDeleteScheme(HKEY::default(), &scheme);
+        let err = PowerDeleteScheme(HKEY::default(), &raw const scheme);
         if err.0 != 0 {
             bail!("PowerDeleteScheme failed: {}", err.0);
         }
@@ -355,7 +353,7 @@ fn get_active_scheme_guid() -> Result<String> {
 
     unsafe {
         let mut raw: *mut windows::core::GUID = std::ptr::null_mut();
-        let err = PowerGetActiveScheme(HKEY::default(), &mut raw);
+        let err = PowerGetActiveScheme(HKEY::default(), &raw mut raw);
         if err.0 != 0 {
             bail!("PowerGetActiveScheme failed: {}", err.0);
         }
@@ -370,9 +368,9 @@ fn set_active_scheme_guid(guid: &str) -> Result<()> {
     use windows::Win32::System::Power::PowerSetActiveScheme;
     use windows::Win32::System::Registry::HKEY;
 
-    let guid = guid_from_string(guid)?;
+    let guid = guid_from_string(guid);
     unsafe {
-        let err = PowerSetActiveScheme(HKEY::default(), Some(&guid));
+        let err = PowerSetActiveScheme(HKEY::default(), Some(&raw const guid));
         if err.0 != 0 {
             bail!("PowerSetActiveScheme failed: {}", err.0);
         }
@@ -387,8 +385,7 @@ fn read_cpu_frequency_sample() -> Result<CpuFrequencySample> {
     };
 
     let logical_processors = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1);
+        .map_or(1, std::num::NonZero::get);
     let mut infos = vec![PROCESSOR_POWER_INFORMATION::default(); logical_processors];
     let bytes = (infos.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32;
     unsafe {
@@ -425,17 +422,17 @@ impl PdhPerformanceReader {
         let mut query = 0_isize;
         let mut counter = 0_isize;
         unsafe {
-            let open = PdhOpenQueryW(PCWSTR::null(), 0, &mut query);
+            let open = PdhOpenQueryW(PCWSTR::null(), 0, &raw mut query);
             if open != 0 {
-                bail!("PdhOpenQueryW failed: {}", open);
+                bail!("PdhOpenQueryW failed: {open}");
             }
             let path: Vec<u16> = "\\Processor Information(_Total)\\% Processor Performance\0"
                 .encode_utf16()
                 .collect();
-            let add = PdhAddEnglishCounterW(query, PCWSTR(path.as_ptr()), 0, &mut counter);
+            let add = PdhAddEnglishCounterW(query, PCWSTR(path.as_ptr()), 0, &raw mut counter);
             if add != 0 {
                 let _ = windows::Win32::System::Performance::PdhCloseQuery(query);
-                bail!("PdhAddEnglishCounterW failed: {}", add);
+                bail!("PdhAddEnglishCounterW failed: {add}");
             }
             let _ = PdhCollectQueryData(query);
         }
@@ -450,13 +447,13 @@ impl PdhPerformanceReader {
         unsafe {
             let collect = PdhCollectQueryData(self.query);
             if collect != 0 {
-                bail!("PdhCollectQueryData failed: {}", collect);
+                bail!("PdhCollectQueryData failed: {collect}");
             }
             let mut value = PDH_FMT_COUNTERVALUE::default();
             let format =
-                PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, None, &mut value);
+                PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, None, &raw mut value);
             if format != 0 {
-                bail!("PdhGetFormattedCounterValue failed: {}", format);
+                bail!("PdhGetFormattedCounterValue failed: {format}");
             }
             Ok(value.Anonymous.doubleValue)
         }
@@ -489,8 +486,7 @@ fn read_effective_cpu_frequency_sample() -> Result<CpuFrequencySample> {
     let performance_percent = reader.sample_percent()?;
     if performance_percent <= 0.0 {
         bail!(
-            "PDH processor performance counter returned {}",
-            performance_percent
+            "PDH processor performance counter returned {performance_percent}"
         );
     }
     Ok(CpuFrequencySample {
@@ -530,8 +526,8 @@ const GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD: windows::core::GUID =
     windows::core::GUID::from_u128(0x7b224883_b3cc_4d79_819f_8374152cbe7c);
 
 #[cfg(windows)]
-fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
-    Ok(PlanProcessorSettings {
+fn read_plan_processor_settings(guid: &str) -> PlanProcessorSettings {
+    PlanProcessorSettings {
         min_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM),
         max_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM),
         boost_mode: read_processor_limit(guid, &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE),
@@ -550,7 +546,7 @@ fn read_plan_processor_settings(guid: &str) -> Result<PlanProcessorSettings> {
             guid,
             &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES_CLASS1,
         ),
-    })
+    }
 }
 
 #[cfg(windows)]
@@ -566,29 +562,29 @@ fn read_processor_value(guid: &str, setting: &windows::core::GUID, ac: bool) -> 
     use windows::Win32::System::Power::{PowerReadACValueIndex, PowerReadDCValueIndex};
     use windows::Win32::System::Registry::HKEY;
 
-    let scheme = guid_from_string(guid)?;
+    let scheme = guid_from_string(guid);
     let mut value = 0_u32;
     unsafe {
         let err = if ac {
             PowerReadACValueIndex(
                 HKEY::default(),
-                Some(&scheme),
+                Some(&raw const scheme),
                 Some(&GUID_PROCESSOR_SETTINGS_SUBGROUP),
                 Some(setting),
-                &mut value,
+                &raw mut value,
             )
             .0
         } else {
             PowerReadDCValueIndex(
                 HKEY::default(),
-                Some(&scheme),
+                Some(&raw const scheme),
                 Some(&GUID_PROCESSOR_SETTINGS_SUBGROUP),
                 Some(setting),
-                &mut value,
+                &raw mut value,
             )
         };
         if err != 0 {
-            bail!("PowerRead processor value failed: {}", err);
+            bail!("PowerRead processor value failed: {err}");
         }
     }
     Ok(value)
@@ -664,12 +660,12 @@ fn write_processor_value(
     use windows::Win32::System::Power::{PowerWriteACValueIndex, PowerWriteDCValueIndex};
     use windows::Win32::System::Registry::HKEY;
 
-    let scheme = guid_from_string(guid)?;
+    let scheme = guid_from_string(guid);
     unsafe {
         let err = if ac {
             PowerWriteACValueIndex(
                 HKEY::default(),
-                &scheme,
+                &raw const scheme,
                 Some(&GUID_PROCESSOR_SETTINGS_SUBGROUP),
                 Some(setting),
                 value,
@@ -678,14 +674,14 @@ fn write_processor_value(
         } else {
             PowerWriteDCValueIndex(
                 HKEY::default(),
-                &scheme,
+                &raw const scheme,
                 Some(&GUID_PROCESSOR_SETTINGS_SUBGROUP),
                 Some(setting),
                 value,
             )
         };
         if err != 0 {
-            bail!("PowerWrite processor value failed: {}", err);
+            bail!("PowerWrite processor value failed: {err}");
         }
     }
     Ok(())
@@ -819,11 +815,11 @@ mod cpu_topology_tests {
 }
 
 #[cfg(test)]
-pub mod mock {
+pub(crate) mod mock {
     use super::*;
     use std::sync::Mutex;
 
-    pub struct MockPowerApi {
+    pub(crate) struct MockPowerApi {
         pub plans: Mutex<Vec<PowerPlan>>,
         pub active_guid: Mutex<String>,
         pub battery: BatteryStatus,
@@ -833,7 +829,7 @@ pub mod mock {
     }
 
     impl MockPowerApi {
-        pub fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 plans: Mutex::new(vec![
                     PowerPlan {

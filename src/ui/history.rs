@@ -17,48 +17,7 @@ struct HistorySummary {
     high_performance_trigger: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trigger_label_turns_raw_reasons_into_user_copy() {
-        assert_eq!(trigger_label("rustc.exe"), "Triggered by rustc.exe");
-        assert_eq!(trigger_label("input resumed"), "Input resumed");
-        assert_eq!(
-            trigger_label("cpu above threshold"),
-            "CPU rose above threshold"
-        );
-        assert_eq!(trigger_label("entered low power"), "Idle and CPU quiet");
-        assert_eq!(trigger_label("startup"), "Startup");
-    }
-
-    #[test]
-    fn plan_kind_detects_common_power_plan_names() {
-        assert!(matches!(
-            plan_kind("Ultra performance"),
-            EventPlanKind::Performance
-        ));
-        assert!(matches!(plan_kind("Power saver"), EventPlanKind::LowPower));
-        assert!(matches!(plan_kind("Balanced"), EventPlanKind::Standard));
-    }
-
-    #[test]
-    fn date_group_label_uses_relative_names_for_recent_days() {
-        let now = Local::now();
-        assert_eq!(date_group_label(now, now), "Today");
-        assert_eq!(date_group_label(now - Duration::days(1), now), "Yesterday");
-    }
-
-    #[test]
-    fn power_label_includes_battery_percent_when_available() {
-        assert_eq!(power_label(true, Some(63)), "Battery 63%");
-        assert_eq!(power_label(true, None), "Battery");
-        assert_eq!(power_label(false, Some(63)), "AC");
-    }
-}
-
-pub fn render(ui: &mut Ui, state: &AppState) {
+pub(crate) fn render(ui: &mut Ui, state: &AppState) {
     crate::ui::padded_page(ui, |ui| {
         design::section_with_header_action(
             ui,
@@ -174,14 +133,10 @@ fn render_event_row(ui: &mut Ui, event: &PowerEvent) {
 
 fn build_summary(events: &std::collections::VecDeque<PowerEvent>) -> HistorySummary {
     let last_switch = events
-        .front()
-        .map(|event| event.ts.format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| "-".to_string());
+        .front().map_or_else(|| "-".to_string(), |event| event.ts.format("%H:%M:%S").to_string());
     let high_performance_trigger = events
         .iter()
-        .find(|event| matches!(plan_kind(&event.plan_name), EventPlanKind::Performance))
-        .map(|event| short_trigger(&event.trigger))
-        .unwrap_or_else(|| "-".to_string());
+        .find(|event| matches!(plan_kind(&event.plan_name), EventPlanKind::Performance)).map_or_else(|| "-".to_string(), |event| short_trigger(&event.trigger));
 
     HistorySummary {
         event_count: events.len(),
@@ -250,9 +205,7 @@ fn date_group_label(ts: DateTime<Local>, now: DateTime<Local>) -> String {
 
 fn power_label(on_battery: bool, battery_pct: Option<u8>) -> String {
     if on_battery {
-        battery_pct
-            .map(|p| format!("Battery {}%", p))
-            .unwrap_or_else(|| "Battery".to_string())
+        battery_pct.map_or_else(|| "Battery".to_string(), |p| format!("Battery {p}%"))
     } else {
         "AC".to_string()
     }
@@ -292,5 +245,46 @@ fn spawn_no_window(prog: &str, args: &[&str]) -> std::io::Result<std::process::C
     #[cfg(not(windows))]
     {
         std::process::Command::new(prog).args(args).spawn()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigger_label_turns_raw_reasons_into_user_copy() {
+        assert_eq!(trigger_label("rustc.exe"), "Triggered by rustc.exe");
+        assert_eq!(trigger_label("input resumed"), "Input resumed");
+        assert_eq!(
+            trigger_label("cpu above threshold"),
+            "CPU rose above threshold"
+        );
+        assert_eq!(trigger_label("entered low power"), "Idle and CPU quiet");
+        assert_eq!(trigger_label("startup"), "Startup");
+    }
+
+    #[test]
+    fn plan_kind_detects_common_power_plan_names() {
+        assert!(matches!(
+            plan_kind("Ultra performance"),
+            EventPlanKind::Performance
+        ));
+        assert!(matches!(plan_kind("Power saver"), EventPlanKind::LowPower));
+        assert!(matches!(plan_kind("Balanced"), EventPlanKind::Standard));
+    }
+
+    #[test]
+    fn date_group_label_uses_relative_names_for_recent_days() {
+        let now = Local::now();
+        assert_eq!(date_group_label(now, now), "Today");
+        assert_eq!(date_group_label(now - Duration::days(1), now), "Yesterday");
+    }
+
+    #[test]
+    fn power_label_includes_battery_percent_when_available() {
+        assert_eq!(power_label(true, Some(63)), "Battery 63%");
+        assert_eq!(power_label(true, None), "Battery");
+        assert_eq!(power_label(false, Some(63)), "AC");
     }
 }

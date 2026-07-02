@@ -2,22 +2,22 @@ use crate::types::CpuHistoryPlanKind;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EnergyRate {
+pub(crate) struct EnergyRate {
     pub dollars_per_kwh: f64,
     pub source_label: String,
 }
 
-pub trait EnergyRateProvider {
+pub(crate) trait EnergyRateProvider {
     fn current_rate(&self) -> EnergyRate;
 }
 
 #[derive(Debug, Clone)]
-pub struct ManualRateProvider {
+pub(crate) struct ManualRateProvider {
     rate: EnergyRate,
 }
 
 impl ManualRateProvider {
-    pub fn new(dollars_per_kwh: f64, source_label: String) -> Self {
+    pub(crate) fn new(dollars_per_kwh: f64, source_label: String) -> Self {
         Self {
             rate: EnergyRate {
                 dollars_per_kwh,
@@ -34,7 +34,7 @@ impl EnergyRateProvider for ManualRateProvider {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CpuPowerProfile {
+pub(crate) struct CpuPowerProfile {
     pub idle_watts: f64,
     pub base_watts: f64,
     pub turbo_watts: f64,
@@ -42,24 +42,24 @@ pub struct CpuPowerProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CpuPowerSample {
+pub(crate) struct CpuPowerSample {
     pub cpu_average_percent: f32,
     pub current_mhz: Option<u32>,
     pub base_mhz: Option<u32>,
     pub plan_kind: CpuHistoryPlanKind,
 }
 
-pub trait CpuPowerProvider {
+pub(crate) trait CpuPowerProvider {
     fn estimated_watts(&self, sample: CpuPowerSample) -> f64;
 }
 
 #[derive(Debug, Clone)]
-pub struct ModeledCpuPowerProvider {
+pub(crate) struct ModeledCpuPowerProvider {
     profile: CpuPowerProfile,
 }
 
 impl ModeledCpuPowerProvider {
-    pub fn new(profile: CpuPowerProfile) -> Self {
+    pub(crate) fn new(profile: CpuPowerProfile) -> Self {
         Self { profile }
     }
 }
@@ -83,14 +83,13 @@ impl CpuPowerProvider for ModeledCpuPowerProvider {
             sample
                 .current_mhz
                 .zip(sample.base_mhz)
-                .map(|(current, base)| {
+                .map_or(1.0, |(current, base)| {
                     if base == 0 {
                         1.0
                     } else {
                         (current as f64 / base as f64).clamp(0.5, 1.0)
                     }
                 })
-                .unwrap_or(1.0)
         };
 
         self.profile.idle_watts
@@ -99,18 +98,18 @@ impl CpuPowerProvider for ModeledCpuPowerProvider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EnergyEstimate {
+pub(crate) struct EnergyEstimate {
     pub estimated_kwh: f64,
     pub estimated_cost_usd: f64,
     pub baseline_cost_usd: f64,
     pub estimated_savings_usd: f64,
 }
 
-pub fn estimate_sample_energy(
+pub(crate) fn estimate_sample_energy(
     estimated_watts: f64,
     baseline_watts: f64,
     sample_duration: Duration,
-    rate: EnergyRate,
+    rate: &EnergyRate,
 ) -> EnergyEstimate {
     let hours = sample_duration.as_secs_f64() / 3600.0;
     let estimated_kwh = estimated_watts.max(0.0) * hours / 1000.0;
@@ -126,6 +125,7 @@ pub fn estimate_sample_energy(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -197,15 +197,15 @@ mod tests {
             60.0,
             125.0,
             Duration::from_secs(30),
-            EnergyRate {
+            &EnergyRate {
                 dollars_per_kwh: 0.15,
                 source_label: "Manual".to_string(),
             },
         );
 
         assert!((estimate.estimated_kwh - 0.0005).abs() < f64::EPSILON);
-        assert!((estimate.estimated_cost_usd - 0.000075).abs() < f64::EPSILON);
-        assert!((estimate.baseline_cost_usd - 0.00015625).abs() < f64::EPSILON);
-        assert!((estimate.estimated_savings_usd - 0.00008125).abs() < f64::EPSILON);
+        assert!((estimate.estimated_cost_usd - 0.000_075).abs() < f64::EPSILON);
+        assert!((estimate.baseline_cost_usd - 0.000_156_25).abs() < f64::EPSILON);
+        assert!((estimate.estimated_savings_usd - 0.000_081_25).abs() < f64::EPSILON);
     }
 }

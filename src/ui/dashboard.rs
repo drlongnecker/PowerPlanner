@@ -14,6 +14,7 @@ const CONFIG_PANEL_WIDE_THRESHOLD: f32 = 760.0;
 const CHARTS_WIDE_THRESHOLD: f32 = 760.0;
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::types::{CpuHistoryPlanKind, CpuHistoryPoint};
@@ -137,7 +138,7 @@ mod tests {
     }
 }
 
-pub fn render(
+pub(crate) fn render(
     ui: &mut Ui,
     state: &AppState,
     config: &mut Config,
@@ -191,9 +192,11 @@ fn load_dashboard_histories(config: &Config) -> (Vec<CpuHistoryPoint>, Vec<CpuHi
         return (vec![], vec![]);
     };
 
-    let usage =
-        db::query_dashboard_samples_recent(&conn, config.general.usage_trend_window_minutes as i64)
-            .unwrap_or_default();
+    let usage = db::query_dashboard_samples_recent(
+        &conn,
+        config.general.usage_trend_window_minutes.cast_signed(),
+    )
+    .unwrap_or_default();
     let plan_time = match config.general.plan_time_range_mode {
         PlanTimeRangeMode::MatchUsageTrend => usage.clone(),
         PlanTimeRangeMode::AllRetained => {
@@ -221,7 +224,7 @@ fn usage_trend_window_selector(ui: &mut Ui, usage_window_minutes: &mut u64, chan
         .show_ui(ui, |ui| {
             for minutes in [15_u64, 30, 60, 90, 120] {
                 if ui
-                    .selectable_value(usage_window_minutes, minutes, format!("{}m", minutes))
+                    .selectable_value(usage_window_minutes, minutes, format!("{minutes}m"))
                     .changed()
                 {
                     *changed = true;
@@ -316,8 +319,7 @@ fn render_usage_trend_tile(
         |ui| {
             ui.label(
                 RichText::new(format!(
-                    "CPU average over the last {} minutes",
-                    usage_window_label
+                    "CPU average over the last {usage_window_label} minutes"
                 ))
                 .weak()
                 .size(design::type_size::HELP),
@@ -397,7 +399,7 @@ fn now_band_left_block(
         if let Some(r) = hold_remaining_secs.filter(|r| *r > 0.0) {
             design::compact_status_badge(
                 ui,
-                &format!("Turbo rescue \u{00b7} holding \u{00b7} {:.0}s", r),
+                &format!("Turbo rescue \u{00b7} holding \u{00b7} {r:.0}s"),
                 design::StatusKind::Warning,
             );
         } else if turbo_rescue_enabled {
@@ -408,19 +410,24 @@ fn now_band_left_block(
     });
 }
 
+#[derive(Clone, Copy)]
+struct CpuAvgMetric<'a> {
+    label: &'a str,
+    value: &'a str,
+    sub: &'a str,
+}
+
 fn now_band_metrics(
     ui: &mut Ui,
     speed_value: &str,
     base_sub: &str,
     is_boosted: bool,
-    cpu_avg_label: &str,
-    cpu_avg_value: &str,
-    cpu_avg_sub: &str,
+    cpu_avg: CpuAvgMetric,
     idle_value: &str,
 ) {
     ui.spacing_mut().item_spacing.x = 24.0;
     now_metric(ui, "Current Speed", speed_value, base_sub, is_boosted);
-    now_metric(ui, cpu_avg_label, cpu_avg_value, cpu_avg_sub, false);
+    now_metric(ui, cpu_avg.label, cpu_avg.value, cpu_avg.sub, false);
     now_metric(ui, "Idle", idle_value, "resets on input", false);
 }
 
@@ -432,8 +439,7 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
         let plan_name = state
             .current_plan
             .as_ref()
-            .map(|p| p.name.as_str())
-            .unwrap_or("Unknown");
+            .map_or("Unknown", |p| p.name.as_str());
 
         let is_boosted = match (
             state.cpu_frequency.max_mhz,
@@ -444,9 +450,7 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
         };
         let speed_value = state
             .cpu_frequency
-            .max_mhz
-            .map(format_mhz)
-            .unwrap_or_else(|| "\u{2014}".to_string());
+            .max_mhz.map_or_else(|| "\u{2014}".to_string(), format_mhz);
         let base_sub = state
             .cpu_info
             .as_ref()
@@ -460,17 +464,13 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
             })
             .unwrap_or_default();
         let cpu_avg_value = state
-            .cpu_average_percent
-            .map(|v| format!("{:.1}%", v))
-            .unwrap_or_else(|| "\u{2014}".to_string());
+            .cpu_average_percent.map_or_else(|| "\u{2014}".to_string(), |v| format!("{v:.1}%"));
         let cpu_avg_sub = format!(
             "trigger {}%",
             config.general.cpu_average_threshold_percent
         );
         let idle_value = state
-            .idle_for_secs
-            .map(|v| format!("{:.0}s / {}s", v, config.general.idle_wait_seconds))
-            .unwrap_or_else(|| "\u{2014}".to_string());
+            .idle_for_secs.map_or_else(|| "\u{2014}".to_string(), |v| format!("{:.0}s / {}s", v, config.general.idle_wait_seconds));
         let cpu_avg_window_label = format!(
             "CPU Average \u{00b7} {}s",
             config.general.cpu_average_window_seconds
@@ -498,9 +498,11 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                         &speed_value,
                         &base_sub,
                         is_boosted,
-                        &cpu_avg_window_label,
-                        &cpu_avg_value,
-                        &cpu_avg_sub,
+                        CpuAvgMetric {
+                            label: &cpu_avg_window_label,
+                            value: &cpu_avg_value,
+                            sub: &cpu_avg_sub,
+                        },
                         &idle_value,
                     );
                 });
@@ -514,9 +516,11 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                     &speed_value,
                     &base_sub,
                     is_boosted,
-                    &cpu_avg_window_label,
-                    &cpu_avg_value,
-                    &cpu_avg_sub,
+                    CpuAvgMetric {
+                        label: &cpu_avg_window_label,
+                        value: &cpu_avg_value,
+                        sub: &cpu_avg_sub,
+                    },
                     &idle_value,
                 );
             });
@@ -535,7 +539,7 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
             let input_str = if state.low_power_ready_input { "ready" } else { "waiting" };
             let cpu_str = if state.low_power_ready_cpu { "ready" } else { "waiting" };
             ui.label(
-                RichText::new(format!("input={}  cpu={}", input_str, cpu_str))
+                RichText::new(format!("input={input_str}  cpu={cpu_str}"))
                     .size(design::type_size::STATUS)
                     .monospace(),
             );
@@ -547,7 +551,7 @@ fn format_mhz(mhz: u32) -> String {
     if mhz >= 1000 {
         format!("{:.2} GHz", mhz as f32 / 1000.0)
     } else {
-        format!("{} MHz", mhz)
+        format!("{mhz} MHz")
     }
 }
 
@@ -558,14 +562,13 @@ fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
 
         let power_source = match state.battery.percent {
             None => "Desktop (no battery)".to_string(),
-            Some(pct) if state.battery.on_battery => format!("Battery ({}%)", pct),
-            Some(pct) => format!("AC ({}% battery)", pct),
+            Some(pct) if state.battery.on_battery => format!("Battery ({pct}%)"),
+            Some(pct) => format!("AC ({pct}% battery)"),
         };
 
         let processor = state
             .cpu_info
-            .as_ref()
-            .map(|c| {
+            .as_ref().map_or_else(|| "Unavailable".to_string(), |c| {
                 c.brand.clone()
                 // NOTE: If base speed becomes useful to show, use this... 
                 // let base = c.base_mhz.map(format_mhz).unwrap_or_default();                
@@ -574,15 +577,12 @@ fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
                 // } else {
                 //     format!("{} @ {}", c.brand, base)
                 // }
-            })
-            .unwrap_or_else(|| "Unavailable".to_string());
+            });
 
         let base_speed = state
             .cpu_info
             .as_ref()
-            .and_then(|c| c.base_mhz)
-            .map(format_mhz)
-            .unwrap_or_else(|| "Unavailable".to_string());
+            .and_then(|c| c.base_mhz).map_or_else(|| "Unavailable".to_string(), format_mhz);
 
         let idle_wait = format!("{}s", config.general.idle_wait_seconds);
         let cpu_window = format!("{}s", config.general.cpu_average_window_seconds);
@@ -664,8 +664,8 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
     let threshold = config.general.cpu_average_threshold_percent as f32;
     let y_max = CPU_GRAPH_Y_MAX;
     let latest = chrono::Local::now();
-    let window_start =
-        latest - chrono::Duration::minutes(config.general.usage_trend_window_minutes as i64);
+    let window_start = latest
+        - chrono::Duration::minutes(config.general.usage_trend_window_minutes.cast_signed());
     let total_millis = (latest - window_start).num_milliseconds().max(1) as f32;
 
     let to_x = |ts: chrono::DateTime<chrono::Local>| {
@@ -689,7 +689,7 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
         painter.text(
             Pos2::new(plot_rect.left() - 8.0, y),
             Align2::RIGHT_CENTER,
-            format!("{:.0}", percent),
+            format!("{percent:.0}"),
             egui::TextStyle::Small.resolve(ui.style()),
             visuals.weak_text_color(),
         );
@@ -952,23 +952,23 @@ fn format_duration(seconds: f32) -> String {
     if total_days > 0 {
         let hours = total_hours % 24;
         if hours > 0 {
-            return format!("{}d {}h", total_days, hours);
+            return format!("{total_days}d {hours}h");
         }
-        return format!("{}d", total_days);
+        return format!("{total_days}d");
     }
     if total_hours > 0 {
         let minutes = total_minutes % 60;
         if minutes > 0 {
-            return format!("{}h {}m", total_hours, minutes);
+            return format!("{total_hours}h {minutes}m");
         }
-        return format!("{}h", total_hours);
+        return format!("{total_hours}h");
     }
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     if minutes > 0 {
-        format!("{}m {}s", minutes, seconds)
+        format!("{minutes}m {seconds}s")
     } else {
-        format!("{}s", seconds)
+        format!("{seconds}s")
     }
 }
 

@@ -2,22 +2,19 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-pub enum RelocateAction {
+pub(crate) enum RelocateAction {
     NotNeeded,
     Needed { suggested: PathBuf },
 }
 
-pub fn check() -> RelocateAction {
-    let exe_dir = match std::env::current_exe()
+pub(crate) fn check() -> RelocateAction {
+    let Some(exe_dir) = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        Some(d) => d,
-        None => {
-            return RelocateAction::Needed {
-                suggested: suggested_path(),
-            }
-        }
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    else {
+        return RelocateAction::Needed {
+            suggested: suggested_path(),
+        };
     };
 
     if is_writable(&exe_dir) {
@@ -29,10 +26,10 @@ pub fn check() -> RelocateAction {
     }
 }
 
-pub fn is_writable(dir: &Path) -> bool {
+pub(crate) fn is_writable(dir: &Path) -> bool {
     let test = dir.join(".powerplanner_write_test");
     match std::fs::write(&test, b"x") {
-        Ok(_) => {
+        Ok(()) => {
             let _ = std::fs::remove_file(&test);
             true
         }
@@ -40,14 +37,14 @@ pub fn is_writable(dir: &Path) -> bool {
     }
 }
 
-pub fn suggested_path() -> PathBuf {
+pub(crate) fn suggested_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("PowerPlanner")
         .join("PowerPlanner.exe")
 }
 
-pub fn copy_exe_to(destination: &Path) -> Result<()> {
+pub(crate) fn copy_exe_to(destination: &Path) -> Result<()> {
     let current = std::env::current_exe()?;
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
@@ -56,7 +53,7 @@ pub fn copy_exe_to(destination: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn launch_detached(path: &Path) -> Result<()> {
+pub(crate) fn launch_detached(path: &Path) -> Result<()> {
     std::process::Command::new(path).spawn()?;
     Ok(())
 }

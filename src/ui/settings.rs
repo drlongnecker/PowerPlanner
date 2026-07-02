@@ -142,108 +142,7 @@ fn preset_label(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn settings_tabs_include_energy_estimates() {
-        let labels = settings_tab_labels();
-
-        assert_eq!(labels.len(), 5);
-        assert!(labels
-            .iter()
-            .any(|(tab, label)| *tab == SettingsTab::Energy && *label == "Energy"));
-    }
-
-    #[test]
-    fn energy_settings_exposes_reference_links() {
-        assert_eq!(ENERGY_RATE_LINKS.len(), 3);
-        assert_eq!(CPU_PROFILE_LINKS.len(), 3);
-        assert!(ENERGY_RATE_LINKS
-            .iter()
-            .any(|(label, _)| label.contains("EIA")));
-        assert!(CPU_PROFILE_LINKS
-            .iter()
-            .any(|(label, _)| label.contains("Intel")));
-    }
-
-    #[test]
-    fn boost_mode_options_cover_all_windows_values() {
-        assert_eq!(BOOST_MODE_OPTIONS.len(), 7);
-        assert_eq!(boost_mode_name(0), "Disabled");
-        assert_eq!(boost_mode_name(2), "Aggressive");
-        assert_eq!(boost_mode_name(6), "Efficient Aggressive at Guaranteed");
-        assert_eq!(boost_mode_name(7), "Unknown");
-    }
-
-    #[test]
-    fn ultimate_performance_detection_is_exact_and_case_insensitive() {
-        let plans = vec![
-            PowerPlan {
-                guid: "high".into(),
-                name: "High Performance".into(),
-            },
-            PowerPlan {
-                guid: "ultimate".into(),
-                name: "ultimate performance".into(),
-            },
-        ];
-
-        assert!(has_ultimate_performance(&plans));
-        assert!(!has_ultimate_performance(&plans[..1]));
-    }
-
-    #[test]
-    fn topology_summary_copies_hybrid_class_counts() {
-        let cpu = CpuInfo {
-            brand: "Example Hybrid CPU".into(),
-            logical_processors: Some(12),
-            efficiency_classes: vec![
-                crate::types::CpuEfficiencyClass {
-                    value: 8,
-                    logical_processors: 4,
-                },
-                crate::types::CpuEfficiencyClass {
-                    value: 0,
-                    logical_processors: 8,
-                },
-            ],
-            ..CpuInfo::default()
-        };
-
-        let summary = topology_summary(Some(&cpu));
-
-        assert_eq!(summary.kind, CpuTopologyKind::Hybrid);
-        assert_eq!(summary.processor, "Example Hybrid CPU");
-        assert!(summary.detail.contains("8 efficient-class"));
-        assert!(summary.detail.contains("4 faster-class"));
-    }
-
-    #[test]
-    fn standard_preset_labels_distinguish_efficiency_and_responsive() {
-        let mut config = Config::default();
-        let efficiency = config
-            .general
-            .standard_processor_preset(CpuTopologyKind::Homogeneous);
-        assert_eq!(
-            preset_label(ProcessorPresetKind::Standard, efficiency),
-            "Efficiency preset"
-        );
-
-        config.general.standard_cpu_max_percent = 100;
-        config.general.standard_boost_mode = 3;
-        let responsive = config
-            .general
-            .standard_processor_preset(CpuTopologyKind::Homogeneous);
-        assert_eq!(
-            preset_label(ProcessorPresetKind::Standard, responsive),
-            "Responsive preset"
-        );
-    }
-}
-
-pub fn render(
+pub(crate) fn render(
     ui: &mut Ui,
     config: &mut Config,
     tx: &mpsc::Sender<MonitorCommand>,
@@ -253,12 +152,11 @@ pub fn render(
     let topology = state
         .cpu_info
         .as_ref()
-        .map(CpuInfo::topology_kind)
-        .unwrap_or(CpuTopologyKind::Unknown);
+        .map_or(CpuTopologyKind::Unknown, CpuInfo::topology_kind);
 
     if let UltimatePerformanceSetupState::Succeeded(plan) = &state.ultimate_performance_setup {
         if config.general.performance_plan_guid != plan.guid {
-            config.general.performance_plan_guid = plan.guid.clone();
+            config.general.performance_plan_guid.clone_from(&plan.guid);
             changed = true;
         }
     }
@@ -869,9 +767,7 @@ fn preset_recommendation_controls(
         );
         ui.add_space(3.0);
         let parking = recommendation
-            .core_parking_min_cores_percent
-            .map(|value| format!("{value}% minimum"))
-            .unwrap_or_else(|| "Windows/OEM managed".to_string());
+            .core_parking_min_cores_percent.map_or_else(|| "Windows/OEM managed".to_string(), |value| format!("{value}% minimum"));
         ui.label(
             RichText::new(format!(
                 "{}% min, {}% max, {} boost, {parking} core parking{}.",
@@ -879,8 +775,7 @@ fn preset_recommendation_controls(
                 recommendation.max_percent,
                 recommendation
                     .boost_mode
-                    .map(|value| boost_mode_name(value as u8))
-                    .unwrap_or("Windows/OEM managed"),
+                    .map_or("Windows/OEM managed", |value| boost_mode_name(value as u8)),
                 if topology == CpuTopologyKind::Hybrid {
                     ", mirrored across both processor classes"
                 } else {
@@ -1136,9 +1031,7 @@ fn boost_mode_name(value: u8) -> &'static str {
 }
 
 fn format_boost_mode(value: Option<u32>) -> String {
-    value
-        .map(|value| boost_mode_name(value as u8).to_string())
-        .unwrap_or_else(|| "n/a".to_string())
+    value.map_or_else(|| "n/a".to_string(), |value| boost_mode_name(value as u8).to_string())
 }
 
 fn turbo_rescue_controls(
@@ -1192,9 +1085,7 @@ fn turbo_rescue_controls(
 }
 
 fn format_limit(value: Option<u32>) -> String {
-    value
-        .map(|value| format!("{}%", value))
-        .unwrap_or_else(|| "n/a".to_string())
+    value.map_or_else(|| "n/a".to_string(), |value| format!("{value}%"))
 }
 
 fn render_automation_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
@@ -1233,7 +1124,7 @@ fn render_automation_section(ui: &mut Ui, config: &mut Config, changed: &mut boo
                                     config.autostart.registered = false;
                                     *changed = true;
                                 }
-                                Err(e) => log::error!("Unregister failed: {}", e),
+                                Err(e) => log::error!("Unregister failed: {e}"),
                             }
                         }
                     } else {
@@ -1251,7 +1142,7 @@ fn render_automation_section(ui: &mut Ui, config: &mut Config, changed: &mut boo
                                     config.autostart.registered = true;
                                     *changed = true;
                                 }
-                                Err(e) => log::error!("Register failed: {}", e),
+                                Err(e) => log::error!("Register failed: {e}"),
                             }
                         }
                     }
@@ -1298,9 +1189,11 @@ fn render_energy_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
                     "Electricity Rate",
                     "Manual electricity price used for estimated CPU cost.",
                     &mut config.general.energy_rate_dollars_per_kwh,
-                    0.0..=2.0,
-                    " $/kWh",
-                    0.001,
+                    FloatFieldSpec {
+                        range: 0.0..=2.0,
+                        suffix: " $/kWh",
+                        speed: 0.001,
+                    },
                     changed,
                 );
                 ui.end_row();
@@ -1331,9 +1224,11 @@ fn render_energy_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
                     "Idle Watts",
                     "Estimated CPU package watts when usage is quiet.",
                     &mut config.general.cpu_idle_watts,
-                    0.0..=500.0,
-                    " W",
-                    0.5,
+                    FloatFieldSpec {
+                        range: 0.0..=500.0,
+                        suffix: " W",
+                        speed: 0.5,
+                    },
                     changed,
                 );
                 float_value_cell(
@@ -1341,9 +1236,11 @@ fn render_energy_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
                     "Base Watts",
                     "Estimated CPU package watts near base frequency under load.",
                     &mut config.general.cpu_base_watts,
-                    0.0..=500.0,
-                    " W",
-                    1.0,
+                    FloatFieldSpec {
+                        range: 0.0..=500.0,
+                        suffix: " W",
+                        speed: 1.0,
+                    },
                     changed,
                 );
                 ui.end_row();
@@ -1353,9 +1250,11 @@ fn render_energy_section(ui: &mut Ui, config: &mut Config, changed: &mut bool) {
                     "Turbo Watts",
                     "Estimated CPU package watts when running above base frequency.",
                     &mut config.general.cpu_turbo_watts,
-                    0.0..=500.0,
-                    " W",
-                    1.0,
+                    FloatFieldSpec {
+                        range: 0.0..=500.0,
+                        suffix: " W",
+                        speed: 1.0,
+                    },
                     changed,
                 );
                 empty_cell(ui);
@@ -1424,8 +1323,7 @@ fn plan_combo_cell(
     let current = available_plans
         .iter()
         .find(|p| p.guid == *selected_guid)
-        .map(|p| p.name.as_str())
-        .unwrap_or("Select a plan");
+        .map_or("Select a plan", |p| p.name.as_str());
 
     ui.vertical(|ui| {
         design::setting_label(ui, label, description);
@@ -1442,7 +1340,7 @@ fn plan_combo_cell(
                             .selectable_label(*selected_guid == plan.guid, &plan.name)
                             .clicked()
                         {
-                            *selected_guid = plan.guid.clone();
+                            selected_guid.clone_from(&plan.guid);
                             *changed = true;
                         }
                     }
@@ -1465,7 +1363,7 @@ fn numeric_value_cell(
         ui.add_space(6.0);
         let numeric = egui::DragValue::new(value)
             .range(range)
-            .suffix(format!(" {}", suffix))
+            .suffix(format!(" {suffix}"))
             .speed(1.0);
         let control_width = ui.available_width().min(SETTINGS_VALUE_WIDTH);
         if ui.add_sized([control_width, 30.0], numeric).changed() {
@@ -1474,23 +1372,27 @@ fn numeric_value_cell(
     });
 }
 
+struct FloatFieldSpec<'a> {
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &'a str,
+    speed: f64,
+}
+
 fn float_value_cell(
     ui: &mut Ui,
     label: &str,
     description: &str,
     value: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    suffix: &str,
-    speed: f64,
+    spec: FloatFieldSpec,
     changed: &mut bool,
 ) {
     ui.vertical(|ui| {
         design::setting_label(ui, label, description);
         ui.add_space(6.0);
         let numeric = egui::DragValue::new(value)
-            .range(range)
-            .suffix(suffix)
-            .speed(speed);
+            .range(spec.range)
+            .suffix(spec.suffix)
+            .speed(spec.speed);
         let control_width = ui.available_width().min(SETTINGS_VALUE_WIDTH);
         if ui.add_sized([control_width, 30.0], numeric).changed() {
             *changed = true;
@@ -1531,4 +1433,105 @@ fn toggle_cell(ui: &mut Ui, label: &str, description: &str, value: &mut bool, ch
 
 fn empty_cell(ui: &mut Ui) {
     ui.allocate_space(egui::vec2(1.0, 1.0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_tabs_include_energy_estimates() {
+        let labels = settings_tab_labels();
+
+        assert_eq!(labels.len(), 5);
+        assert!(labels
+            .iter()
+            .any(|(tab, label)| *tab == SettingsTab::Energy && *label == "Energy"));
+    }
+
+    #[test]
+    fn energy_settings_exposes_reference_links() {
+        assert_eq!(ENERGY_RATE_LINKS.len(), 3);
+        assert_eq!(CPU_PROFILE_LINKS.len(), 3);
+        assert!(ENERGY_RATE_LINKS
+            .iter()
+            .any(|(label, _)| label.contains("EIA")));
+        assert!(CPU_PROFILE_LINKS
+            .iter()
+            .any(|(label, _)| label.contains("Intel")));
+    }
+
+    #[test]
+    fn boost_mode_options_cover_all_windows_values() {
+        assert_eq!(BOOST_MODE_OPTIONS.len(), 7);
+        assert_eq!(boost_mode_name(0), "Disabled");
+        assert_eq!(boost_mode_name(2), "Aggressive");
+        assert_eq!(boost_mode_name(6), "Efficient Aggressive at Guaranteed");
+        assert_eq!(boost_mode_name(7), "Unknown");
+    }
+
+    #[test]
+    fn ultimate_performance_detection_is_exact_and_case_insensitive() {
+        let plans = vec![
+            PowerPlan {
+                guid: "high".into(),
+                name: "High Performance".into(),
+            },
+            PowerPlan {
+                guid: "ultimate".into(),
+                name: "ultimate performance".into(),
+            },
+        ];
+
+        assert!(has_ultimate_performance(&plans));
+        assert!(!has_ultimate_performance(&plans[..1]));
+    }
+
+    #[test]
+    fn topology_summary_copies_hybrid_class_counts() {
+        let cpu = CpuInfo {
+            brand: "Example Hybrid CPU".into(),
+            logical_processors: Some(12),
+            efficiency_classes: vec![
+                crate::types::CpuEfficiencyClass {
+                    value: 8,
+                    logical_processors: 4,
+                },
+                crate::types::CpuEfficiencyClass {
+                    value: 0,
+                    logical_processors: 8,
+                },
+            ],
+            ..CpuInfo::default()
+        };
+
+        let summary = topology_summary(Some(&cpu));
+
+        assert_eq!(summary.kind, CpuTopologyKind::Hybrid);
+        assert_eq!(summary.processor, "Example Hybrid CPU");
+        assert!(summary.detail.contains("8 efficient-class"));
+        assert!(summary.detail.contains("4 faster-class"));
+    }
+
+    #[test]
+    fn standard_preset_labels_distinguish_efficiency_and_responsive() {
+        let mut config = Config::default();
+        let efficiency = config
+            .general
+            .standard_processor_preset(CpuTopologyKind::Homogeneous);
+        assert_eq!(
+            preset_label(ProcessorPresetKind::Standard, efficiency),
+            "Efficiency preset"
+        );
+
+        config.general.standard_cpu_max_percent = 100;
+        config.general.standard_boost_mode = 3;
+        let responsive = config
+            .general
+            .standard_processor_preset(CpuTopologyKind::Homogeneous);
+        assert_eq!(
+            preset_label(ProcessorPresetKind::Standard, responsive),
+            "Responsive preset"
+        );
+    }
 }

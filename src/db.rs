@@ -3,18 +3,19 @@ use crate::types::{CpuHistoryEnergyEstimate, CpuHistoryPoint, PowerEvent};
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 const DASHBOARD_SAMPLE_RETENTION_DAYS: i64 = 60;
 
-pub fn db_path() -> PathBuf {
+pub(crate) fn db_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("PowerPlanner")
         .join("history.db")
 }
 
-pub fn open() -> Result<Connection> {
+pub(crate) fn open() -> Result<Connection> {
     let path = db_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -73,7 +74,7 @@ fn add_dashboard_energy_columns(conn: &Connection) -> Result<()> {
     ] {
         if !dashboard_samples_has_column(conn, name)? {
             conn.execute(
-                &format!("ALTER TABLE dashboard_samples ADD COLUMN {} {}", name, ty),
+                &format!("ALTER TABLE dashboard_samples ADD COLUMN {name} {ty}"),
                 [],
             )?;
         }
@@ -92,7 +93,7 @@ fn dashboard_samples_has_column(conn: &Connection, name: &str) -> Result<bool> {
     Ok(false)
 }
 
-pub fn insert_event(conn: &Connection, event: &PowerEvent) -> Result<()> {
+pub(crate) fn insert_event(conn: &Connection, event: &PowerEvent) -> Result<()> {
     conn.execute(
         "INSERT INTO power_events (ts, plan_guid, plan_name, trigger, on_battery, battery_pct)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -108,12 +109,12 @@ pub fn insert_event(conn: &Connection, event: &PowerEvent) -> Result<()> {
     Ok(())
 }
 
-pub fn query_recent(conn: &Connection, limit: usize) -> Result<Vec<PowerEvent>> {
+pub(crate) fn query_recent(conn: &Connection, limit: usize) -> Result<Vec<PowerEvent>> {
     let mut stmt = conn.prepare(
         "SELECT ts, plan_guid, plan_name, trigger, on_battery, battery_pct
          FROM power_events ORDER BY ts DESC LIMIT ?1",
     )?;
-    let rows = stmt.query_map(params![limit as i64], |row| {
+    let rows = stmt.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
         let ts_ms: i64 = row.get(0)?;
         let on_battery: i32 = row.get(4)?;
         let battery_pct: Option<i32> = row.get(5)?;
@@ -129,7 +130,7 @@ pub fn query_recent(conn: &Connection, limit: usize) -> Result<Vec<PowerEvent>> 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-pub fn insert_dashboard_sample(conn: &Connection, sample: &CpuHistoryPoint) -> Result<()> {
+pub(crate) fn insert_dashboard_sample(conn: &Connection, sample: &CpuHistoryPoint) -> Result<()> {
     conn.execute(
         "INSERT INTO dashboard_samples (
              ts, average_percent, current_mhz, base_mhz, plan_kind, plan_name, trigger,
@@ -157,7 +158,7 @@ pub fn insert_dashboard_sample(conn: &Connection, sample: &CpuHistoryPoint) -> R
     Ok(())
 }
 
-pub fn query_dashboard_samples_recent(
+pub(crate) fn query_dashboard_samples_recent(
     conn: &Connection,
     minutes: i64,
 ) -> Result<Vec<CpuHistoryPoint>> {
@@ -185,7 +186,7 @@ pub fn query_dashboard_samples_recent(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-pub fn query_all_dashboard_samples(conn: &Connection) -> Result<Vec<CpuHistoryPoint>> {
+pub(crate) fn query_all_dashboard_samples(conn: &Connection) -> Result<Vec<CpuHistoryPoint>> {
     let mut stmt = conn.prepare(
         "SELECT ts, average_percent, current_mhz, base_mhz, plan_kind, plan_name, trigger,
                 estimated_watts, estimated_kwh, estimated_cost_usd,
@@ -236,7 +237,7 @@ fn prune_dashboard_samples(conn: &Connection, now: chrono::DateTime<Local>) -> R
     .map_err(Into::into)
 }
 
-pub fn export_csv(conn: &Connection) -> Result<String> {
+pub(crate) fn export_csv(conn: &Connection) -> Result<String> {
     let mut stmt = conn.prepare(
         "SELECT ts, plan_name, trigger, on_battery, battery_pct
          FROM power_events ORDER BY ts DESC",
@@ -258,19 +259,21 @@ pub fn export_csv(conn: &Connection) -> Result<String> {
         let (ts_ms, plan, trigger, on_bat, pct) = row?;
         let ts = Local.timestamp_millis_opt(ts_ms).unwrap();
         let pct_str = pct.map(|p| p.to_string()).unwrap_or_default();
-        out.push_str(&format!(
-            "{},{},{},{},{}\n",
+        let _ = writeln!(
+            out,
+            "{},{},{},{},{}",
             ts.format("%Y-%m-%d %H:%M:%S"),
             plan,
             trigger,
             on_bat,
             pct_str
-        ));
+        );
     }
     Ok(out)
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::types::CpuHistoryPlanKind;
@@ -337,7 +340,7 @@ mod tests {
     fn test_query_recent_respects_limit() {
         let conn = in_memory();
         for i in 0..5 {
-            insert_event(&conn, &make_event("Balanced", &format!("t{}", i))).unwrap();
+            insert_event(&conn, &make_event("Balanced", &format!("t{i}"))).unwrap();
         }
         assert_eq!(query_recent(&conn, 3).unwrap().len(), 3);
     }

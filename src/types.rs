@@ -5,19 +5,19 @@ use std::collections::VecDeque;
 
 /// A deduplicated snapshot of a running process (name + optional exe path).
 #[derive(Debug, Clone, Default)]
-pub struct RunningProcess {
+pub(crate) struct RunningProcess {
     pub name: String,
     pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct PowerPlan {
+pub(crate) struct PowerPlan {
     pub guid: String,
     pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CpuInfo {
+pub(crate) struct CpuInfo {
     pub manufacturer: String,
     pub brand: String,
     pub base_mhz: Option<u32>,
@@ -27,20 +27,20 @@ pub struct CpuInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CpuEfficiencyClass {
+pub(crate) struct CpuEfficiencyClass {
     pub value: u8,
     pub logical_processors: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuTopologyKind {
+pub(crate) enum CpuTopologyKind {
     Unknown,
     Homogeneous,
     Hybrid,
 }
 
 impl CpuInfo {
-    pub fn topology_kind(&self) -> CpuTopologyKind {
+    pub(crate) fn topology_kind(&self) -> CpuTopologyKind {
         match self.efficiency_classes.len() {
             1 => CpuTopologyKind::Homogeneous,
             2 => CpuTopologyKind::Hybrid,
@@ -50,18 +50,18 @@ impl CpuInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CpuFrequencySample {
+pub(crate) struct CpuFrequencySample {
     pub max_mhz: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ProcessorLimit {
+pub(crate) struct ProcessorLimit {
     pub ac: Option<u32>,
     pub dc: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PlanProcessorSettings {
+pub(crate) struct PlanProcessorSettings {
     pub min_percent: ProcessorLimit,
     pub max_percent: ProcessorLimit,
     pub boost_mode: ProcessorLimit,
@@ -73,15 +73,17 @@ pub struct PlanProcessorSettings {
     pub class1_core_parking_min_cores_percent: ProcessorLimit,
 }
 
+// "_percent" postfix matches the unit convention used by sibling processor-limit structs.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessorClassRecommendation {
+pub(crate) struct ProcessorClassRecommendation {
     pub min_percent: u32,
     pub max_percent: u32,
     pub core_parking_min_cores_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessorPresetRecommendation {
+pub(crate) struct ProcessorPresetRecommendation {
     pub min_percent: u32,
     pub max_percent: u32,
     pub boost_mode: Option<u32>,
@@ -92,14 +94,14 @@ pub struct ProcessorPresetRecommendation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessorPresetDiagnostics {
+pub(crate) enum ProcessorPresetDiagnostics {
     Configured,
     NeedsReview,
     Unavailable,
 }
 
 impl ProcessorPresetDiagnostics {
-    pub fn for_settings(
+    pub(crate) fn for_settings(
         settings: Option<&PlanProcessorSettings>,
         recommendation: ProcessorPresetRecommendation,
     ) -> Self {
@@ -145,7 +147,7 @@ impl ProcessorPresetDiagnostics {
                 ]);
             }
         }
-        if values.iter().any(|value| value.is_none()) {
+        if values.iter().any(std::option::Option::is_none) {
             return Self::Unavailable;
         }
 
@@ -192,7 +194,7 @@ impl ProcessorPresetDiagnostics {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct BatteryStatus {
+pub(crate) struct BatteryStatus {
     pub on_battery: bool,
     pub percent: Option<u8>, // None = desktop (no battery)
     #[allow(dead_code)]
@@ -200,7 +202,7 @@ pub struct BatteryStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct PowerEvent {
+pub(crate) struct PowerEvent {
     pub ts: DateTime<Local>,
     pub plan_name: String,
     pub plan_guid: String,
@@ -210,7 +212,7 @@ pub struct PowerEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CpuHistoryPlanKind {
+pub(crate) enum CpuHistoryPlanKind {
     LowPower,
     #[default]
     Standard,
@@ -218,7 +220,7 @@ pub enum CpuHistoryPlanKind {
 }
 
 impl CpuHistoryPlanKind {
-    pub fn from_storage(value: i64) -> Self {
+    pub(crate) fn from_storage(value: i64) -> Self {
         match value {
             0 => Self::LowPower,
             2 => Self::Performance,
@@ -226,7 +228,7 @@ impl CpuHistoryPlanKind {
         }
     }
 
-    pub fn storage_value(self) -> i64 {
+    pub(crate) fn storage_value(self) -> i64 {
         match self {
             Self::LowPower => 0,
             Self::Standard => 1,
@@ -234,7 +236,7 @@ impl CpuHistoryPlanKind {
         }
     }
 
-    pub fn color(self) -> Color32 {
+    pub(crate) fn color(self) -> Color32 {
         match self {
             Self::LowPower => Color32::from_rgb(0xC9, 0xCB, 0xA3),
             Self::Standard => Color32::from_rgb(0xFF, 0xE1, 0xA8),
@@ -244,7 +246,7 @@ impl CpuHistoryPlanKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct CpuHistoryPoint {
+pub(crate) struct CpuHistoryPoint {
     pub ts: DateTime<Local>,
     pub average_percent: f32,
     pub current_mhz: Option<u32>,
@@ -256,7 +258,7 @@ pub struct CpuHistoryPoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CpuHistoryEnergyEstimate {
+pub(crate) struct CpuHistoryEnergyEstimate {
     pub estimated_watts: f64,
     pub estimated_kwh: f64,
     pub estimated_cost_usd: f64,
@@ -266,7 +268,7 @@ pub struct CpuHistoryEnergyEstimate {
 }
 
 #[derive(Debug)]
-pub enum MonitorCommand {
+pub(crate) enum MonitorCommand {
     ForcePlan(Option<String>), // Some(guid) = force and lock; None = clear force, resume auto
     ForceConfiguredStandard,
     ForceConfiguredPerformance,
@@ -284,7 +286,7 @@ pub enum MonitorCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum UltimatePerformanceSetupState {
+pub(crate) enum UltimatePerformanceSetupState {
     #[default]
     Idle,
     Pending,
@@ -293,7 +295,7 @@ pub enum UltimatePerformanceSetupState {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AppState {
+pub(crate) struct AppState {
     pub current_plan: Option<PowerPlan>,
     pub available_plans: Vec<PowerPlan>,
     pub matched_processes: Vec<String>,
@@ -317,7 +319,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn push_event(&mut self, event: PowerEvent) {
+    pub(crate) fn push_event(&mut self, event: PowerEvent) {
         self.recent_events.push_front(event);
         if self.recent_events.len() > 50 {
             self.recent_events.pop_back();

@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc, RwLock};
 
 const WATERMARK_PNG: &[u8] = include_bytes!("../assets/logo-mark-mono.png");
 
-pub struct PowerPlannerApp {
+pub(crate) struct PowerPlannerApp {
     pub state: Arc<RwLock<AppState>>,
     pub cmd_tx: mpsc::Sender<MonitorCommand>,
     pub config: Config,
@@ -24,7 +24,7 @@ pub struct PowerPlannerApp {
 }
 
 impl PowerPlannerApp {
-    pub fn new(
+    pub(crate) fn new(
         state: Arc<RwLock<AppState>>,
         cmd_tx: mpsc::Sender<MonitorCommand>,
         config: Config,
@@ -107,11 +107,9 @@ impl eframe::App for PowerPlannerApp {
                 .read()
                 .unwrap()
                 .current_plan
-                .as_ref()
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "Unknown".into());
+                .as_ref().map_or_else(|| "Unknown".into(), |p| p.name.clone());
             if name != self.last_tooltip_plan {
-                tray.set_tooltip(&format!("PowerPlanner - {}", name));
+                tray.set_tooltip(&format!("PowerPlanner - {name}"));
                 self.last_tooltip_plan = name;
             }
         }
@@ -209,19 +207,19 @@ impl eframe::App for PowerPlannerApp {
             let state = self.state.read().unwrap();
             match self.nav {
                 Nav::Dashboard => {
-                    crate::ui::dashboard::render(ui, &*state, &mut self.config, &self.cmd_tx);
+                    crate::ui::dashboard::render(ui, &state, &mut self.config, &self.cmd_tx);
                 }
                 Nav::PowerUsage => {
                     crate::ui::power_usage::render(ui, &mut self.config, &self.cmd_tx);
                 }
                 Nav::WatchedApps => {
-                    crate::ui::watched::render(ui, &*state, &self.cmd_tx, &mut self.config);
+                    crate::ui::watched::render(ui, &state, &self.cmd_tx, &mut self.config);
                 }
                 Nav::Settings => {
-                    crate::ui::settings::render(ui, &mut self.config, &self.cmd_tx, &*state);
+                    crate::ui::settings::render(ui, &mut self.config, &self.cmd_tx, &state);
                 }
                 Nav::History => {
-                    crate::ui::history::render(ui, &*state);
+                    crate::ui::history::render(ui, &state);
                 }
             }
         });
@@ -415,6 +413,7 @@ fn draw_appearance_icon(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -613,10 +612,9 @@ fn window_lifecycle_action(
 
 fn close_dialog_action(choice: CloseDialogChoice, has_tray: bool) -> CloseDialogAction {
     match choice {
-        CloseDialogChoice::Cancel => CloseDialogAction::Dismiss,
         CloseDialogChoice::Close => CloseDialogAction::Exit,
         CloseDialogChoice::MinimizeToTray if has_tray => CloseDialogAction::DismissAndHide,
-        CloseDialogChoice::MinimizeToTray => CloseDialogAction::Dismiss,
+        CloseDialogChoice::Cancel | CloseDialogChoice::MinimizeToTray => CloseDialogAction::Dismiss,
     }
 }
 
@@ -786,6 +784,8 @@ fn close_dialog_keyboard_choice(
 }
 
 // Runs even when the window is hidden because Win32 ShowWindow bypasses eframe.
+// Args are owned (not just borrowed) because they must outlive the caller for this spawned thread.
+#[allow(clippy::needless_pass_by_value)]
 fn tray_event_thread(
     ctx: egui::Context,
     cmd_tx: mpsc::Sender<MonitorCommand>,
@@ -837,7 +837,7 @@ fn tray_event_thread(
     }
 }
 
-/// Restore the PowerPlanner window via Win32 when eframe's update loop is not running.
+/// Restore the `PowerPlanner` window via Win32 when eframe's update loop is not running.
 #[cfg(windows)]
 fn win32_show_window() {
     use windows::core::PCWSTR;
