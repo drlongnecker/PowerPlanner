@@ -200,9 +200,9 @@ pub(crate) fn render(
                                 numeric_value_cell(
                                     ui,
                                     "Poll Interval",
-                                    "Global monitor cadence for scans and rule evaluation.",
+                                    "Global monitor cadence for scans and rule evaluation. Hidden windows use a slower background cadence.",
                                     &mut config.general.poll_interval_ms,
-                                    100..=5_000,
+                                    1_000..=5_000,
                                     "ms",
                                     changed,
                                 );
@@ -671,10 +671,7 @@ fn ultimate_performance_setup_controls(
             } else {
                 "Add Ultimate Performance"
             };
-            if ui
-                .add_enabled(!pending, egui::Button::new(label))
-                .clicked()
-            {
+            if ui.add_enabled(!pending, egui::Button::new(label)).clicked() {
                 let _ = tx.send(MonitorCommand::InstallUltimatePerformance { recommendation });
             }
         }
@@ -766,8 +763,10 @@ fn preset_recommendation_controls(
                 .strong(),
         );
         ui.add_space(3.0);
-        let parking = recommendation
-            .core_parking_min_cores_percent.map_or_else(|| "Windows/OEM managed".to_string(), |value| format!("{value}% minimum"));
+        let parking = recommendation.core_parking_min_cores_percent.map_or_else(
+            || "Windows/OEM managed".to_string(),
+            |value| format!("{value}% minimum"),
+        );
         ui.label(
             RichText::new(format!(
                 "{}% min, {}% max, {} boost, {parking} core parking{}.",
@@ -1031,7 +1030,10 @@ fn boost_mode_name(value: u8) -> &'static str {
 }
 
 fn format_boost_mode(value: Option<u32>) -> String {
-    value.map_or_else(|| "n/a".to_string(), |value| boost_mode_name(value as u8).to_string())
+    value.map_or_else(
+        || "n/a".to_string(),
+        |value| boost_mode_name(value as u8).to_string(),
+    )
 }
 
 fn turbo_rescue_controls(

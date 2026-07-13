@@ -313,7 +313,11 @@ fn duplicate_ultimate_performance() -> Result<PowerPlan> {
 
     unsafe {
         let mut raw: *mut windows::core::GUID = std::ptr::null_mut();
-        let err = PowerDuplicateScheme(HKEY::default(), &ULTIMATE_PERFORMANCE_TEMPLATE, &raw mut raw);
+        let err = PowerDuplicateScheme(
+            HKEY::default(),
+            &ULTIMATE_PERFORMANCE_TEMPLATE,
+            &raw mut raw,
+        );
         if err.0 != 0 {
             bail!("PowerDuplicateScheme failed: {}", err.0);
         }
@@ -384,8 +388,7 @@ fn read_cpu_frequency_sample() -> Result<CpuFrequencySample> {
         CallNtPowerInformation, ProcessorInformation, PROCESSOR_POWER_INFORMATION,
     };
 
-    let logical_processors = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get);
+    let logical_processors = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let mut infos = vec![PROCESSOR_POWER_INFORMATION::default(); logical_processors];
     let bytes = (infos.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32;
     unsafe {
@@ -485,9 +488,7 @@ fn read_effective_cpu_frequency_sample() -> Result<CpuFrequencySample> {
     };
     let performance_percent = reader.sample_percent()?;
     if performance_percent <= 0.0 {
-        bail!(
-            "PDH processor performance counter returned {performance_percent}"
-        );
+        bail!("PDH processor performance counter returned {performance_percent}");
     }
     Ok(CpuFrequencySample {
         max_mhz: Some(((base_mhz as f64) * performance_percent / 100.0).round() as u32),
@@ -536,10 +537,7 @@ fn read_plan_processor_settings(guid: &str) -> PlanProcessorSettings {
             &GUID_PROCESSOR_CORE_PARKING_MINIMUM_CORES,
         ),
         latency_hint_perf: read_processor_limit(guid, &GUID_PROCESSOR_LATENCY_HINT_PERF),
-        idle_promote_threshold: read_processor_limit(
-            guid,
-            &GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD,
-        ),
+        idle_promote_threshold: read_processor_limit(guid, &GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD),
         class1_min_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MINIMUM_CLASS1),
         class1_max_percent: read_processor_limit(guid, &GUID_PROCESSOR_THROTTLE_MAXIMUM_CLASS1),
         class1_core_parking_min_cores_percent: read_processor_limit(
@@ -616,11 +614,7 @@ fn write_processor_preset(guid: &str, recommendation: ProcessorPresetRecommendat
         write_processor_value_both(guid, &GUID_PROCESSOR_LATENCY_HINT_PERF, latency_hint_perf)?;
     }
     if let Some(idle_promote) = recommendation.idle_promote_threshold {
-        write_processor_value_both(
-            guid,
-            &GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD,
-            idle_promote,
-        )?;
+        write_processor_value_both(guid, &GUID_PROCESSOR_IDLE_PROMOTE_THRESHOLD, idle_promote)?;
     }
     if let Some(class1) = recommendation.class1 {
         write_processor_value_both(

@@ -5,6 +5,7 @@ use crate::ui::Nav;
 use eframe::egui;
 use egui::{Align, Layout};
 use std::sync::{mpsc, Arc, RwLock};
+use std::time::Instant;
 
 const WATERMARK_PNG: &[u8] = include_bytes!("../assets/logo-mark-mono.png");
 
@@ -14,12 +15,17 @@ pub(crate) struct PowerPlannerApp {
     pub config: Config,
     pub nav: Nav,
     pub tray: Option<crate::tray::Tray>,
+    tray_startup: crate::tray::TrayStartup,
     bg_texture: Option<egui::TextureHandle>,
     waker_started: bool,
     last_tooltip_plan: String,
     last_nav: Nav,
     last_applied_appearance: Option<AppearanceMode>,
     last_system_theme: Option<eframe::Theme>,
+    monitor_repaint_enabled: Option<bool>,
+    monitor_process_details_enabled: Option<bool>,
+    eco_qos_enabled: Option<bool>,
+    window_hidden: bool,
     show_close_confirmation: bool,
 }
 
@@ -30,18 +36,29 @@ impl PowerPlannerApp {
         config: Config,
         tray: Option<crate::tray::Tray>,
     ) -> Self {
+        let tray_startup = if tray.is_some() {
+            crate::tray::TrayStartup::finished()
+        } else {
+            crate::tray::TrayStartup::new(Instant::now())
+        };
+
         Self {
             state,
             cmd_tx,
             config,
             nav: Nav::default(),
             tray,
+            tray_startup,
             bg_texture: None,
             waker_started: false,
             last_tooltip_plan: String::new(),
             last_nav: Nav::default(),
             last_applied_appearance: None,
             last_system_theme: None,
+            monitor_repaint_enabled: None,
+            monitor_process_details_enabled: None,
+            eco_qos_enabled: None,
+            window_hidden: false,
             show_close_confirmation: false,
         }
     }
@@ -50,8 +67,9 @@ impl PowerPlannerApp {
 impl eframe::App for PowerPlannerApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.apply_appearance_if_needed(ctx, frame);
+        self.create_tray_if_ready(ctx);
 
-        if !self.waker_started {
+        if self.tray.is_some() && !self.waker_started {
             let ctx2 = ctx.clone();
             let cmd_tx2 = self.cmd_tx.clone();
             let ids = self.tray.as_ref().map(|t| {
@@ -77,9 +95,17 @@ impl eframe::App for PowerPlannerApp {
                 viewport.close_requested(),
             )
         });
+        if self.window_hidden && !minimized {
+            self.window_hidden = false;
+        }
+        let window_visible = !minimized && !self.window_hidden;
+        self.sync_monitor_ui_interest(window_visible);
+
         match window_lifecycle_action(self.tray.is_some(), minimized, close_requested) {
             WindowLifecycleAction::None => {}
             WindowLifecycleAction::Hide => {
+                self.window_hidden = true;
+                self.sync_monitor_ui_interest(false);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
             WindowLifecycleAction::CancelCloseAndPrompt => {
@@ -107,7 +133,8 @@ impl eframe::App for PowerPlannerApp {
                 .read()
                 .unwrap()
                 .current_plan
-                .as_ref().map_or_else(|| "Unknown".into(), |p| p.name.clone());
+                .as_ref()
+                .map_or_else(|| "Unknown".into(), |p| p.name.clone());
             if name != self.last_tooltip_plan {
                 tray.set_tooltip(&format!("PowerPlanner - {name}"));
                 self.last_tooltip_plan = name;
@@ -127,6 +154,7 @@ impl eframe::App for PowerPlannerApp {
             .clicked()
             {
                 self.nav = Nav::Dashboard;
+                self.sync_monitor_ui_interest(window_visible);
             }
             if design::nav_item(
                 ui,
@@ -137,6 +165,7 @@ impl eframe::App for PowerPlannerApp {
             .clicked()
             {
                 self.nav = Nav::WatchedApps;
+                self.sync_monitor_ui_interest(window_visible);
             }
             if design::nav_item(
                 ui,
@@ -147,6 +176,7 @@ impl eframe::App for PowerPlannerApp {
             .clicked()
             {
                 self.nav = Nav::PowerUsage;
+                self.sync_monitor_ui_interest(window_visible);
             }
             if design::nav_item(
                 ui,
@@ -157,6 +187,7 @@ impl eframe::App for PowerPlannerApp {
             .clicked()
             {
                 self.nav = Nav::Settings;
+                self.sync_monitor_ui_interest(window_visible);
             }
             if design::nav_item(
                 ui,
@@ -167,6 +198,7 @@ impl eframe::App for PowerPlannerApp {
             .clicked()
             {
                 self.nav = Nav::History;
+                self.sync_monitor_ui_interest(window_visible);
             }
 
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -210,7 +242,7 @@ impl eframe::App for PowerPlannerApp {
                     crate::ui::dashboard::render(ui, &state, &mut self.config, &self.cmd_tx);
                 }
                 Nav::PowerUsage => {
-                    crate::ui::power_usage::render(ui, &mut self.config, &self.cmd_tx);
+                    crate::ui::power_usage::render(ui, &state, &mut self.config, &self.cmd_tx);
                 }
                 Nav::WatchedApps => {
                     crate::ui::watched::render(ui, &state, &self.cmd_tx, &mut self.config);
@@ -232,6 +264,8 @@ impl eframe::App for PowerPlannerApp {
                     }
                     CloseDialogAction::DismissAndHide => {
                         self.show_close_confirmation = false;
+                        self.window_hidden = true;
+                        self.sync_monitor_ui_interest(false);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     }
                     CloseDialogAction::Exit => {
@@ -246,6 +280,76 @@ impl eframe::App for PowerPlannerApp {
 }
 
 impl PowerPlannerApp {
+    fn create_tray_if_ready(&mut self, ctx: &egui::Context) {
+        if self.tray.is_some() {
+            return;
+        }
+
+        let Some(result) = self.tray_startup.try_build(Instant::now()) else {
+            return;
+        };
+
+        match result {
+            Ok(tray) => {
+                log::info!("Tray icon initialized");
+                self.tray = Some(tray);
+                self.last_tooltip_plan.clear();
+                ctx.request_repaint();
+            }
+            Err(err) => {
+                log::warn!("Tray icon unavailable: {err:#}");
+            }
+        }
+    }
+
+    fn sync_monitor_ui_interest(&mut self, window_visible: bool) {
+        self.set_monitor_repaint_enabled(window_visible);
+        self.set_monitor_process_details_enabled(window_visible && self.nav == Nav::WatchedApps);
+        self.set_eco_qos_enabled(!window_visible);
+    }
+
+    fn set_monitor_repaint_enabled(&mut self, enabled: bool) {
+        if self.monitor_repaint_enabled == Some(enabled) {
+            return;
+        }
+
+        let _ = self
+            .cmd_tx
+            .send(MonitorCommand::SetUiRepaintEnabled(enabled));
+        self.monitor_repaint_enabled = Some(enabled);
+    }
+
+    fn set_monitor_process_details_enabled(&mut self, enabled: bool) {
+        if self.monitor_process_details_enabled == Some(enabled) {
+            return;
+        }
+
+        let _ = self
+            .cmd_tx
+            .send(MonitorCommand::SetRunningProcessDetailsEnabled(enabled));
+        self.monitor_process_details_enabled = Some(enabled);
+    }
+
+    fn set_eco_qos_enabled(&mut self, enabled: bool) {
+        if self.eco_qos_enabled == Some(enabled) {
+            return;
+        }
+
+        match crate::process_qos::set_eco_qos(enabled) {
+            Ok(()) => {
+                log::info!(
+                    "Process EcoQoS {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+                self.eco_qos_enabled = Some(enabled);
+            }
+            Err(err) => {
+                log::warn!("Failed to update process EcoQoS: {err}");
+                self.eco_qos_enabled = None;
+            }
+        }
+    }
+
     fn apply_appearance_if_needed(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let appearance = self.config.general.appearance_mode;
         let system_theme = frame.info().system_theme;
@@ -797,28 +901,23 @@ fn tray_event_thread(
         tray_icon::menu::MenuId,
     )>,
 ) {
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    let tray_rx = tray_icon::TrayIconEvent::receiver();
+    let menu_rx = tray_icon::menu::MenuEvent::receiver();
 
-        while let Ok(ev) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                ..
-            } = ev
-            {
-                win32_show_window();
-                // Sync eframe's internal visibility state. win32_show_window bypasses
-                // eframe, so without this eframe still thinks Visible=false and may
-                // deduplicate the next ViewportCommand::Visible(false) as a no-op.
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.request_repaint();
-            }
+    loop {
+        if let Ok(ev) = tray_rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            handle_tray_icon_event(&ev, &ctx, &cmd_tx);
+        }
+
+        while let Ok(ev) = tray_rx.try_recv() {
+            handle_tray_icon_event(&ev, &ctx, &cmd_tx);
         }
 
         if let Some((ref show_id, ref balanced_id, ref perf_id, ref resume_id, ref exit_id)) = ids {
-            while let Ok(ev) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            while let Ok(ev) = menu_rx.try_recv() {
                 if ev.id == *show_id {
                     win32_show_window();
+                    let _ = cmd_tx.send(MonitorCommand::SetUiRepaintEnabled(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.request_repaint();
                 } else if ev.id == *balanced_id {
@@ -834,6 +933,28 @@ fn tray_event_thread(
                 }
             }
         }
+    }
+}
+
+fn handle_tray_icon_event(
+    ev: &tray_icon::TrayIconEvent,
+    ctx: &egui::Context,
+    cmd_tx: &mpsc::Sender<MonitorCommand>,
+) {
+    if matches!(
+        ev,
+        tray_icon::TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            ..
+        }
+    ) {
+        win32_show_window();
+        let _ = cmd_tx.send(MonitorCommand::SetUiRepaintEnabled(true));
+        // Sync eframe's internal visibility state. win32_show_window bypasses
+        // eframe, so without this eframe still thinks Visible=false and may
+        // deduplicate the next ViewportCommand::Visible(false) as a no-op.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.request_repaint();
     }
 }
 

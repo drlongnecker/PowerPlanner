@@ -77,7 +77,12 @@ pub(crate) fn registered_status_text(registered: bool) -> &'static str {
     }
 }
 
-pub(crate) fn section(ui: &mut Ui, title: &str, description: &str, add_contents: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(
+    ui: &mut Ui,
+    title: &str,
+    description: &str,
+    add_contents: impl FnOnce(&mut Ui),
+) {
     section_with_header_action(ui, title, description, |_| {}, add_contents);
 }
 
@@ -311,7 +316,12 @@ pub(crate) fn accent_command_button(ui: &mut Ui, label: &str) -> egui::Response 
     )
 }
 
-pub(crate) fn icon_button(ui: &mut Ui, label: &str, tooltip: &str, accent: Color32) -> egui::Response {
+pub(crate) fn icon_button(
+    ui: &mut Ui,
+    label: &str,
+    tooltip: &str,
+    accent: Color32,
+) -> egui::Response {
     let button = egui::Button::new(
         RichText::new(label)
             .size(type_size::LABEL)
@@ -321,7 +331,6 @@ pub(crate) fn icon_button(ui: &mut Ui, label: &str, tooltip: &str, accent: Color
     .rounding(radius::PILL);
     ui.add_sized([28.0, 28.0], button).on_hover_text(tooltip)
 }
-
 
 fn draw_checkmark(ui: &Ui, center: egui::Pos2) {
     let check_stroke = Stroke::new(1.6, Color32::WHITE);
@@ -478,7 +487,10 @@ pub(crate) fn metric_tile(ui: &mut Ui, label: &str, value: &str, accent: bool) {
         let visuals = ui.visuals();
         egui::Frame::none()
             .fill(visuals.extreme_bg_color)
-            .stroke(egui::Stroke::new(1.0, visuals.noninteractive().bg_stroke.color))
+            .stroke(egui::Stroke::new(
+                1.0,
+                visuals.noninteractive().bg_stroke.color,
+            ))
             .rounding(radius::CONTROL)
             .inner_margin(egui::Margin {
                 left: 14.0,

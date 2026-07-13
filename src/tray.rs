@@ -1,14 +1,64 @@
 // src/tray.rs
 use anyhow::Result;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tray_icon::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
 };
 
 const LOGO_PNG: &[u8] = include_bytes!("../planner.png");
-const STARTUP_TRAY_ATTEMPTS: usize = 15;
-const STARTUP_TRAY_RETRY_DELAY: Duration = Duration::from_secs(1);
+const STARTUP_TRAY_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+const STARTUP_TRAY_SETTLE_DURATION: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupTrayDecision {
+    Wait,
+    Build,
+}
+
+pub(crate) struct TrayStartup {
+    next_check: Instant,
+    ready_since: Option<Instant>,
+    finished: bool,
+}
+
+impl TrayStartup {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            next_check: now,
+            ready_since: None,
+            finished: false,
+        }
+    }
+
+    pub(crate) fn finished() -> Self {
+        Self {
+            next_check: Instant::now(),
+            ready_since: None,
+            finished: true,
+        }
+    }
+
+    pub(crate) fn try_build(&mut self, now: Instant) -> Option<Result<Tray>> {
+        if self.finished || now < self.next_check {
+            return None;
+        }
+
+        self.next_check = now + STARTUP_TRAY_CHECK_INTERVAL;
+        if startup_tray_decision(
+            now,
+            notification_area_ready(),
+            &mut self.ready_since,
+            STARTUP_TRAY_SETTLE_DURATION,
+        ) == StartupTrayDecision::Wait
+        {
+            return None;
+        }
+
+        self.finished = true;
+        Some(Tray::new())
+    }
+}
 
 pub(crate) struct Tray {
     pub show_item_id: tray_icon::menu::MenuId,
@@ -20,16 +70,6 @@ pub(crate) struct Tray {
 }
 
 impl Tray {
-    pub(crate) fn new_after_startup_wait() -> Result<Self> {
-        wait_with_delay(
-            STARTUP_TRAY_ATTEMPTS,
-            STARTUP_TRAY_RETRY_DELAY,
-            notification_area_ready,
-            std::thread::sleep,
-        );
-        Self::new()
-    }
-
     pub(crate) fn new() -> Result<Self> {
         let show = MenuItem::new("Show Window", true, None);
         let balanced = MenuItem::new("Force Balanced", true, None);
@@ -70,22 +110,23 @@ impl Tray {
     }
 }
 
-fn wait_with_delay(
-    max_attempts: usize,
-    delay: Duration,
-    mut ready: impl FnMut() -> bool,
-    mut sleep: impl FnMut(Duration),
-) -> bool {
-    assert!(max_attempts > 0);
-
-    for _ in 1..max_attempts {
-        if ready() {
-            return true;
-        }
-        sleep(delay);
+fn startup_tray_decision(
+    now: Instant,
+    ready: bool,
+    ready_since: &mut Option<Instant>,
+    settle_duration: Duration,
+) -> StartupTrayDecision {
+    if !ready {
+        *ready_since = None;
+        return StartupTrayDecision::Wait;
     }
 
-    ready()
+    let since = *ready_since.get_or_insert(now);
+    if now.duration_since(since) >= settle_duration {
+        StartupTrayDecision::Build
+    } else {
+        StartupTrayDecision::Wait
+    }
 }
 
 #[cfg(windows)]
@@ -136,65 +177,84 @@ fn load_icon() -> tray_icon::Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
     #[test]
-    fn tray_startup_wait_returns_immediately_when_ready() {
-        let attempts = Cell::new(0);
-        let sleeps = Cell::new(0);
+    fn tray_startup_waits_for_stable_notification_area() {
+        let start = Instant::now();
+        let settle = Duration::from_secs(2);
+        let mut ready_since = None;
 
-        let ready = wait_with_delay(
-            3,
-            Duration::from_secs(1),
-            || {
-                attempts.set(attempts.get() + 1);
-                true
-            },
-            |_| sleeps.set(sleeps.get() + 1),
+        assert_eq!(
+            startup_tray_decision(start, true, &mut ready_since, settle),
+            StartupTrayDecision::Wait
         );
-
-        assert!(ready);
-        assert_eq!(attempts.get(), 1);
-        assert_eq!(sleeps.get(), 0);
+        assert_eq!(
+            startup_tray_decision(
+                start + Duration::from_millis(1_999),
+                true,
+                &mut ready_since,
+                settle
+            ),
+            StartupTrayDecision::Wait
+        );
+        assert_eq!(
+            startup_tray_decision(start + settle, true, &mut ready_since, settle),
+            StartupTrayDecision::Build
+        );
     }
 
     #[test]
-    fn tray_startup_wait_recovers_when_notification_area_appears() {
-        let attempts = Cell::new(0);
-        let sleeps = Cell::new(0);
+    fn tray_startup_stability_resets_when_notification_area_disappears() {
+        let start = Instant::now();
+        let settle = Duration::from_secs(2);
+        let mut ready_since = None;
 
-        let ready = wait_with_delay(
-            4,
-            Duration::from_secs(1),
-            || {
-                attempts.set(attempts.get() + 1);
-                attempts.get() >= 3
-            },
-            |_| sleeps.set(sleeps.get() + 1),
+        assert_eq!(
+            startup_tray_decision(start, true, &mut ready_since, settle),
+            StartupTrayDecision::Wait
         );
-
-        assert!(ready);
-        assert_eq!(attempts.get(), 3);
-        assert_eq!(sleeps.get(), 2);
+        assert_eq!(
+            startup_tray_decision(
+                start + Duration::from_secs(1),
+                false,
+                &mut ready_since,
+                settle
+            ),
+            StartupTrayDecision::Wait
+        );
+        assert_eq!(
+            startup_tray_decision(
+                start + Duration::from_secs(2),
+                true,
+                &mut ready_since,
+                settle
+            ),
+            StartupTrayDecision::Wait
+        );
+        assert_eq!(
+            startup_tray_decision(
+                start + Duration::from_secs(3),
+                true,
+                &mut ready_since,
+                settle
+            ),
+            StartupTrayDecision::Wait
+        );
+        assert_eq!(
+            startup_tray_decision(
+                start + Duration::from_secs(4),
+                true,
+                &mut ready_since,
+                settle
+            ),
+            StartupTrayDecision::Build
+        );
     }
 
     #[test]
-    fn tray_startup_wait_stops_after_the_final_check() {
-        let attempts = Cell::new(0);
-        let sleeps = Cell::new(0);
+    fn tray_startup_finished_state_never_builds() {
+        let mut startup = TrayStartup::finished();
 
-        let ready = wait_with_delay(
-            3,
-            Duration::from_secs(1),
-            || {
-                attempts.set(attempts.get() + 1);
-                false
-            },
-            |_| sleeps.set(sleeps.get() + 1),
-        );
-
-        assert!(!ready);
-        assert_eq!(attempts.get(), 3);
-        assert_eq!(sleeps.get(), 2);
+        assert!(startup.try_build(Instant::now()).is_none());
     }
 }

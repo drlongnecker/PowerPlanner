@@ -282,6 +282,8 @@ pub(crate) enum MonitorCommand {
         recommendation: ProcessorPresetRecommendation,
     },
     RefreshPlans,
+    SetUiRepaintEnabled(bool),
+    SetRunningProcessDetailsEnabled(bool),
     Stop,
 }
 

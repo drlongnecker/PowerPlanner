@@ -42,14 +42,25 @@ pub(crate) fn render(ui: &mut Ui, state: &AppState) {
 
 fn render_summary(ui: &mut Ui, summary: &HistorySummary) {
     ui.horizontal_wrapped(|ui| {
-        design::chip(ui, &format!("{} events", summary.event_count), design::ChipTone::Muted);
+        design::chip(
+            ui,
+            &format!("{} events", summary.event_count),
+            design::ChipTone::Muted,
+        );
         ui.add_space(10.0);
-        design::chip(ui, &format!("Last switch: {}", summary.last_switch), design::ChipTone::Muted);
+        design::chip(
+            ui,
+            &format!("Last switch: {}", summary.last_switch),
+            design::ChipTone::Muted,
+        );
         if summary.high_performance_trigger != "-" {
             ui.add_space(10.0);
             design::chip(
                 ui,
-                &format!("High Performance trigger: {}", summary.high_performance_trigger),
+                &format!(
+                    "High Performance trigger: {}",
+                    summary.high_performance_trigger
+                ),
                 design::ChipTone::Warning,
             );
         }
@@ -116,8 +127,7 @@ fn render_event_row(ui: &mut Ui, event: &PowerEvent) {
                 design::plan_pill(ui, &event.plan_name);
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(trigger_label(&event.trigger))
-                        .size(design::type_size::LABEL),
+                    RichText::new(trigger_label(&event.trigger)).size(design::type_size::LABEL),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     design::chip(
@@ -132,11 +142,14 @@ fn render_event_row(ui: &mut Ui, event: &PowerEvent) {
 }
 
 fn build_summary(events: &std::collections::VecDeque<PowerEvent>) -> HistorySummary {
-    let last_switch = events
-        .front().map_or_else(|| "-".to_string(), |event| event.ts.format("%H:%M:%S").to_string());
+    let last_switch = events.front().map_or_else(
+        || "-".to_string(),
+        |event| event.ts.format("%H:%M:%S").to_string(),
+    );
     let high_performance_trigger = events
         .iter()
-        .find(|event| matches!(plan_kind(&event.plan_name), EventPlanKind::Performance)).map_or_else(|| "-".to_string(), |event| short_trigger(&event.trigger));
+        .find(|event| matches!(plan_kind(&event.plan_name), EventPlanKind::Performance))
+        .map_or_else(|| "-".to_string(), |event| short_trigger(&event.trigger));
 
     HistorySummary {
         event_count: events.len(),
@@ -157,7 +170,6 @@ fn plan_kind(plan_name: &str) -> EventPlanKind {
         EventPlanKind::Other
     }
 }
-
 
 fn trigger_label(trigger: &str) -> String {
     match trigger.trim().to_lowercase().as_str() {

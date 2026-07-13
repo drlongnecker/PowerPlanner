@@ -144,7 +144,7 @@ pub(crate) fn render(
     config: &mut Config,
     tx: &mpsc::Sender<MonitorCommand>,
 ) {
-    let (usage_history, plan_time_history) = load_dashboard_histories(config);
+    let (usage_history, plan_time_history) = load_dashboard_histories(state, config);
     let mut dashboard_preferences_changed = false;
     let mut usage_window_minutes = config.general.usage_trend_window_minutes;
     let mut plan_time_range_mode = config.general.plan_time_range_mode;
@@ -166,7 +166,15 @@ pub(crate) fn render(
                             ui.add_space(design::spacing::SECTION_GAP);
                             render_configuration_panel(ui, state, config);
                             ui.add_space(design::spacing::SECTION_GAP);
-                            render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
+                            render_chart_row(
+                                ui,
+                                &usage_history,
+                                &plan_time_history,
+                                config,
+                                &mut usage_window_minutes,
+                                &mut plan_time_range_mode,
+                                &mut dashboard_preferences_changed,
+                            );
                         });
                     });
                 } else {
@@ -174,7 +182,15 @@ pub(crate) fn render(
                     ui.add_space(design::spacing::SECTION_GAP);
                     render_configuration_panel(ui, state, config);
                     ui.add_space(design::spacing::SECTION_GAP);
-                    render_chart_row(ui, &usage_history, &plan_time_history, config, &mut usage_window_minutes, &mut plan_time_range_mode, &mut dashboard_preferences_changed);
+                    render_chart_row(
+                        ui,
+                        &usage_history,
+                        &plan_time_history,
+                        config,
+                        &mut usage_window_minutes,
+                        &mut plan_time_range_mode,
+                        &mut dashboard_preferences_changed,
+                    );
                 }
             });
     });
@@ -187,23 +203,31 @@ pub(crate) fn render(
     }
 }
 
-fn load_dashboard_histories(config: &Config) -> (Vec<CpuHistoryPoint>, Vec<CpuHistoryPoint>) {
-    let Ok(conn) = db::open() else {
-        return (vec![], vec![]);
-    };
-
-    let usage = db::query_dashboard_samples_recent(
-        &conn,
-        config.general.usage_trend_window_minutes.cast_signed(),
-    )
-    .unwrap_or_default();
+fn load_dashboard_histories(
+    state: &AppState,
+    config: &Config,
+) -> (Vec<CpuHistoryPoint>, Vec<CpuHistoryPoint>) {
+    let usage = recent_history_from_state(state, config.general.usage_trend_window_minutes);
     let plan_time = match config.general.plan_time_range_mode {
         PlanTimeRangeMode::MatchUsageTrend => usage.clone(),
         PlanTimeRangeMode::AllRetained => {
+            let Ok(conn) = db::open() else {
+                return (usage, vec![]);
+            };
             db::query_all_dashboard_samples(&conn).unwrap_or_default()
         }
     };
     (usage, plan_time)
+}
+
+fn recent_history_from_state(state: &AppState, minutes: u64) -> Vec<CpuHistoryPoint> {
+    let threshold = chrono::Local::now() - chrono::Duration::minutes(minutes.max(1).cast_signed());
+    state
+        .cpu_history
+        .iter()
+        .filter(|point| point.ts >= threshold)
+        .cloned()
+        .collect()
 }
 
 fn plan_time_subtitle(plan_time_range_mode: PlanTimeRangeMode) -> &'static str {
@@ -285,19 +309,45 @@ fn render_chart_row(
             ui.allocate_ui_with_layout(
                 egui::vec2(tile_width, 0.0),
                 Layout::top_down(Align::Min),
-                |ui| render_usage_trend_tile(ui, usage_history, config, usage_window_minutes, dashboard_preferences_changed),
+                |ui| {
+                    render_usage_trend_tile(
+                        ui,
+                        usage_history,
+                        config,
+                        usage_window_minutes,
+                        dashboard_preferences_changed,
+                    );
+                },
             );
             ui.add_space(design::spacing::SECTION_GAP);
             ui.allocate_ui_with_layout(
                 egui::vec2(tile_width, 0.0),
                 Layout::top_down(Align::Min),
-                |ui| render_plan_time_tile(ui, plan_time_history, plan_time_range_mode, dashboard_preferences_changed),
+                |ui| {
+                    render_plan_time_tile(
+                        ui,
+                        plan_time_history,
+                        plan_time_range_mode,
+                        dashboard_preferences_changed,
+                    );
+                },
             );
         });
     } else {
-        render_usage_trend_tile(ui, usage_history, config, usage_window_minutes, dashboard_preferences_changed);
+        render_usage_trend_tile(
+            ui,
+            usage_history,
+            config,
+            usage_window_minutes,
+            dashboard_preferences_changed,
+        );
         ui.add_space(design::spacing::SECTION_GAP);
-        render_plan_time_tile(ui, plan_time_history, plan_time_range_mode, dashboard_preferences_changed);
+        render_plan_time_tile(
+            ui,
+            plan_time_history,
+            plan_time_range_mode,
+            dashboard_preferences_changed,
+        );
     }
 }
 
@@ -345,17 +395,12 @@ fn render_plan_time_tile(
             plan_time_range_selector(ui, plan_time_range_mode, changed);
         },
         |ui| {
-            ui.label(
-                RichText::new(subtitle)
-                    .weak()
-                    .size(design::type_size::HELP),
-            );
+            ui.label(RichText::new(subtitle).weak().size(design::type_size::HELP));
             ui.add_space(8.0);
             render_plan_time_timeline(ui, plan_time_history);
         },
     );
 }
-
 
 fn now_metric(ui: &mut Ui, label: &str, value: &str, sub: &str, accent: bool) {
     ui.vertical(|ui| {
@@ -375,7 +420,12 @@ fn now_metric(ui: &mut Ui, label: &str, value: &str, sub: &str, accent: bool) {
                 .monospace()
                 .color(color),
         );
-        ui.label(RichText::new(sub).size(design::type_size::HELP).monospace().weak());
+        ui.label(
+            RichText::new(sub)
+                .size(design::type_size::HELP)
+                .monospace()
+                .weak(),
+        );
     });
 }
 
@@ -450,7 +500,8 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
         };
         let speed_value = state
             .cpu_frequency
-            .max_mhz.map_or_else(|| "\u{2014}".to_string(), format_mhz);
+            .max_mhz
+            .map_or_else(|| "\u{2014}".to_string(), format_mhz);
         let base_sub = state
             .cpu_info
             .as_ref()
@@ -464,13 +515,13 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
             })
             .unwrap_or_default();
         let cpu_avg_value = state
-            .cpu_average_percent.map_or_else(|| "\u{2014}".to_string(), |v| format!("{v:.1}%"));
-        let cpu_avg_sub = format!(
-            "trigger {}%",
-            config.general.cpu_average_threshold_percent
+            .cpu_average_percent
+            .map_or_else(|| "\u{2014}".to_string(), |v| format!("{v:.1}%"));
+        let cpu_avg_sub = format!("trigger {}%", config.general.cpu_average_threshold_percent);
+        let idle_value = state.idle_for_secs.map_or_else(
+            || "\u{2014}".to_string(),
+            |v| format!("{:.0}s / {}s", v, config.general.idle_wait_seconds),
         );
-        let idle_value = state
-            .idle_for_secs.map_or_else(|| "\u{2014}".to_string(), |v| format!("{:.0}s / {}s", v, config.general.idle_wait_seconds));
         let cpu_avg_window_label = format!(
             "CPU Average \u{00b7} {}s",
             config.general.cpu_average_window_seconds
@@ -483,7 +534,14 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                 ui.allocate_ui_with_layout(
                     egui::vec2(left_width, 0.0),
                     Layout::top_down(Align::Min),
-                    |ui| now_band_left_block(ui, plan_name, config.general.turbo_rescue_enabled, state.hold_remaining_secs),
+                    |ui| {
+                        now_band_left_block(
+                            ui,
+                            plan_name,
+                            config.general.turbo_rescue_enabled,
+                            state.hold_remaining_secs,
+                        );
+                    },
                 );
                 ui.add_space(16.0);
                 let (div_rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 72.0), Sense::hover());
@@ -508,7 +566,12 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                 });
             });
         } else {
-            now_band_left_block(ui, plan_name, config.general.turbo_rescue_enabled, state.hold_remaining_secs);
+            now_band_left_block(
+                ui,
+                plan_name,
+                config.general.turbo_rescue_enabled,
+                state.hold_remaining_secs,
+            );
             ui.add_space(12.0);
             ui.horizontal_top(|ui| {
                 now_band_metrics(
@@ -536,8 +599,16 @@ fn render_now_band(ui: &mut Ui, state: &AppState, config: &Config) {
                     .weak(),
             );
             ui.add_space(12.0);
-            let input_str = if state.low_power_ready_input { "ready" } else { "waiting" };
-            let cpu_str = if state.low_power_ready_cpu { "ready" } else { "waiting" };
+            let input_str = if state.low_power_ready_input {
+                "ready"
+            } else {
+                "waiting"
+            };
+            let cpu_str = if state.low_power_ready_cpu {
+                "ready"
+            } else {
+                "waiting"
+            };
             ui.label(
                 RichText::new(format!("input={input_str}  cpu={cpu_str}"))
                     .size(design::type_size::STATUS)
@@ -566,23 +637,25 @@ fn render_configuration_panel(ui: &mut Ui, state: &AppState, config: &Config) {
             Some(pct) => format!("AC ({pct}% battery)"),
         };
 
-        let processor = state
-            .cpu_info
-            .as_ref().map_or_else(|| "Unavailable".to_string(), |c| {
+        let processor = state.cpu_info.as_ref().map_or_else(
+            || "Unavailable".to_string(),
+            |c| {
                 c.brand.clone()
-                // NOTE: If base speed becomes useful to show, use this... 
-                // let base = c.base_mhz.map(format_mhz).unwrap_or_default();                
+                // NOTE: If base speed becomes useful to show, use this...
+                // let base = c.base_mhz.map(format_mhz).unwrap_or_default();
                 // if base.is_empty() {
                 //     c.brand.clone()
                 // } else {
                 //     format!("{} @ {}", c.brand, base)
                 // }
-            });
+            },
+        );
 
         let base_speed = state
             .cpu_info
             .as_ref()
-            .and_then(|c| c.base_mhz).map_or_else(|| "Unavailable".to_string(), format_mhz);
+            .and_then(|c| c.base_mhz)
+            .map_or_else(|| "Unavailable".to_string(), format_mhz);
 
         let idle_wait = format!("{}s", config.general.idle_wait_seconds);
         let cpu_window = format!("{}s", config.general.cpu_average_window_seconds);
@@ -664,8 +737,8 @@ fn render_cpu_history_chart(ui: &mut Ui, history: &[CpuHistoryPoint], config: &C
     let threshold = config.general.cpu_average_threshold_percent as f32;
     let y_max = CPU_GRAPH_Y_MAX;
     let latest = chrono::Local::now();
-    let window_start = latest
-        - chrono::Duration::minutes(config.general.usage_trend_window_minutes.cast_signed());
+    let window_start =
+        latest - chrono::Duration::minutes(config.general.usage_trend_window_minutes.cast_signed());
     let total_millis = (latest - window_start).num_milliseconds().max(1) as f32;
 
     let to_x = |ts: chrono::DateTime<chrono::Local>| {

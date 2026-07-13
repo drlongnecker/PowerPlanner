@@ -109,8 +109,7 @@ pub(crate) fn unregister() -> Result<()> {
 }
 
 pub(crate) fn is_registered() -> bool {
-    schtasks(&["/query", "/tn", TASK_NAME])
-        .is_ok_and(|o| o.status.success())
+    schtasks(&["/query", "/tn", TASK_NAME]).is_ok_and(|o| o.status.success())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

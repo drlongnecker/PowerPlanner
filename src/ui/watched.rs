@@ -118,45 +118,45 @@ pub(crate) fn render(
                 egui::ScrollArea::vertical()
                     .id_source("running_now_scroll")
                     .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .column(Column::exact(ACTION_COLUMN_WIDTH))
-                        .column(Column::initial(NAME_COLUMN_WIDTH))
-                        .column(Column::exact(path_width))
-                        .body(|mut body| {
-                            for proc in &unmatched {
-                                body.row(WATCH_ROW_HEIGHT, |mut row| {
-                                    row.col(|ui| {
-                                        if design::icon_button(
-                                            ui,
-                                            "+",
-                                            "Add to watch list",
-                                            design::color::SUCCESS,
-                                        )
-                                        .clicked()
-                                        {
-                                            to_promote = Some(proc.name.clone());
-                                        }
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(&proc.name);
-                                    });
-                                    row.col(|ui| {
-                                        let path_text = proc.path.as_deref().unwrap_or("-");
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(path_text)
-                                                    .weak()
-                                                    .size(design::type_size::HELP)
-                                                    .monospace(),
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .column(Column::exact(ACTION_COLUMN_WIDTH))
+                            .column(Column::initial(NAME_COLUMN_WIDTH))
+                            .column(Column::exact(path_width))
+                            .body(|mut body| {
+                                for proc in &unmatched {
+                                    body.row(WATCH_ROW_HEIGHT, |mut row| {
+                                        row.col(|ui| {
+                                            if design::icon_button(
+                                                ui,
+                                                "+",
+                                                "Add to watch list",
+                                                design::color::SUCCESS,
                                             )
-                                            .truncate(),
-                                        );
+                                            .clicked()
+                                            {
+                                                to_promote = Some(proc.name.clone());
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(&proc.name);
+                                        });
+                                        row.col(|ui| {
+                                            let path_text = proc.path.as_deref().unwrap_or("-");
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(path_text)
+                                                        .weak()
+                                                        .size(design::type_size::HELP)
+                                                        .monospace(),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
                                     });
-                                });
-                            }
-                        });
-                });
+                                }
+                            });
+                    });
             },
         );
 

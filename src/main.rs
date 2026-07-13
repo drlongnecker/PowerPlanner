@@ -8,6 +8,7 @@ mod energy;
 mod idle;
 mod monitor;
 mod power;
+mod process_qos;
 mod relocate;
 mod scheduler;
 mod tray;
@@ -25,10 +26,9 @@ fn main() {
 
     // Step 1: Relocate check
     if let relocate::RelocateAction::Needed { suggested } = relocate::check() {
-        if prompt_relocate(&suggested)
-            && relocate::copy_exe_to(&suggested).is_ok() {
-                let _ = relocate::launch_detached(&suggested);
-            }
+        if prompt_relocate(&suggested) && relocate::copy_exe_to(&suggested).is_ok() {
+            let _ = relocate::launch_detached(&suggested);
+        }
         return;
     }
 
@@ -66,10 +66,16 @@ fn main() {
             .unwrap_or_default()
             .into_iter()
             .collect();
+    let initial_cpu_history: std::collections::VecDeque<types::CpuHistoryPoint> =
+        db::query_dashboard_samples_recent(&db_conn, 120)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
     let app_state = Arc::new(RwLock::new(types::AppState {
         available_plans: available_plans.clone(),
         current_plan: initial_plan,
         recent_events: initial_events,
+        cpu_history: initial_cpu_history,
         ..Default::default()
     }));
 
@@ -89,7 +95,8 @@ fn main() {
     // Step 9: Log startup event
     if let Ok(conn) = db::open() {
         let plan_name = power
-            .get_active_plan().map_or_else(|_| "Unknown".into(), |p| p.name);
+            .get_active_plan()
+            .map_or_else(|_| "Unknown".into(), |p| p.name);
         let _ = db::insert_event(
             &conn,
             &types::PowerEvent {
@@ -103,16 +110,8 @@ fn main() {
         );
     }
 
-    // Step 10: Build tray
-    let tray = match tray::Tray::new_after_startup_wait() {
-        Ok(tray) => Some(tray),
-        Err(err) => {
-            log::warn!("Tray icon unavailable: {err:#}");
-            None
-        }
-    };
-
-    // Step 11: Run egui
+    // Step 10: Run egui. The tray is created from the running UI loop so boot
+    // startup can wait for Explorer without permanently losing tray support.
     let icon = image::load_from_memory(LOGO_PNG).ok().map(|img| {
         let rgba = img.into_rgba8();
         let (width, height) = rgba.dimensions();
@@ -147,7 +146,7 @@ fn main() {
         Box::new(move |cc| {
             let _ = repaint_ctx.set(cc.egui_ctx.clone());
             Ok(Box::new(app::PowerPlannerApp::new(
-                app_state, cmd_tx, config, tray,
+                app_state, cmd_tx, config, None,
             )))
         }),
     )

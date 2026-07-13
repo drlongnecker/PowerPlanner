@@ -14,14 +14,12 @@ pub(crate) struct Config {
     pub watchlist: WatchlistConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub(crate) enum PlanTimeRangeMode {
     #[default]
     MatchUsageTrend,
     AllRetained,
 }
-
 
 impl<'de> Deserialize<'de> for PlanTimeRangeMode {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -42,14 +40,12 @@ impl<'de> Deserialize<'de> for PlanTimeRangeMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub(crate) enum PowerUsageRangeMode {
     #[default]
     RecentMinutes,
     AllRetained,
 }
-
 
 impl<'de> Deserialize<'de> for PowerUsageRangeMode {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -70,15 +66,13 @@ impl<'de> Deserialize<'de> for PowerUsageRangeMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub(crate) enum AppearanceMode {
     #[default]
     System,
     Light,
     Dark,
 }
-
 
 impl<'de> Deserialize<'de> for AppearanceMode {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -280,8 +274,7 @@ where
     ));
     let minutes = value
         .as_integer()
-        .unwrap_or(default_usage_trend_window_minutes().cast_signed())
-        as u64;
+        .unwrap_or(default_usage_trend_window_minutes().cast_signed()) as u64;
     if is_supported_usage_trend_window_minutes(minutes) {
         Ok(minutes)
     } else {
@@ -305,7 +298,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: GeneralConfig {
-                poll_interval_ms: 500,
+                poll_interval_ms: 1_000,
                 hold_performance_seconds: 25,
                 standard_plan_guid: String::new(),
                 low_power_plan_guid: String::new(),
@@ -447,7 +440,10 @@ pub(crate) fn initialize_plan_selection(
     active_plan: Option<&PowerPlan>,
     is_first_run: bool,
 ) {
-    let active_guid = active_plan.map_or_else(|| default_available_guid(available_plans), |plan| plan.guid.clone());
+    let active_guid = active_plan.map_or_else(
+        || default_available_guid(available_plans),
+        |plan| plan.guid.clone(),
+    );
     let discovered_low_power =
         discover_plan_guid_by_name(available_plans, &["power saver", "power save"]);
     let discovered_performance = discover_plan_guid_by_name(
@@ -591,7 +587,7 @@ mod tests {
     #[test]
     fn test_default_config_values() {
         let c = Config::default();
-        assert_eq!(c.general.poll_interval_ms, 500);
+        assert_eq!(c.general.poll_interval_ms, 1_000);
         assert_eq!(c.general.hold_performance_seconds, 25);
         assert!(c.general.standard_plan_guid.is_empty());
         assert!(c.general.low_power_plan_guid.is_empty());
@@ -668,7 +664,7 @@ mod tests {
         std::fs::write(&path, text).unwrap();
         // Confirm the TOML round-trips to the same defaults
         let loaded: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(loaded.general.poll_interval_ms, 500);
+        assert_eq!(loaded.general.poll_interval_ms, 1_000);
         assert!(loaded.watchlist.processes.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }

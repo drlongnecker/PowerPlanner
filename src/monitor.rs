@@ -17,8 +17,12 @@ use std::sync::{mpsc, Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use sysinfo::System as SysInfo;
 
-const DASHBOARD_CPU_HISTORY_WINDOW: Duration = Duration::from_mins(15);
+const DASHBOARD_CPU_HISTORY_WINDOW: Duration = Duration::from_hours(2);
 const DASHBOARD_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
+const MIN_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const UI_REPAINT_INTERVAL: Duration = Duration::from_secs(1);
 
 fn install_ultimate_performance(
     power: &dyn PowerApi,
@@ -28,6 +32,11 @@ fn install_ultimate_performance(
     install_ultimate_performance_with_save(power, state, recommendation, &|config| {
         crate::config::save(config).map_err(|err| err.to_string())
     })
+}
+
+fn stale_instant(age: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_sub(age).unwrap_or(now)
 }
 
 fn install_ultimate_performance_with_save(
@@ -150,7 +159,11 @@ pub(crate) struct MonitorState {
 }
 
 impl MonitorState {
-    pub(crate) fn new(config: Config, initial_guid: String, available_plans: Vec<PowerPlan>) -> Self {
+    pub(crate) fn new(
+        config: Config,
+        initial_guid: String,
+        available_plans: Vec<PowerPlan>,
+    ) -> Self {
         let watchlist_lower = config
             .watchlist
             .processes
@@ -186,6 +199,23 @@ impl MonitorState {
             .collect();
     }
 
+    fn seed_dashboard_history(&mut self, points: VecDeque<CpuHistoryPoint>, now: Instant) {
+        let local_now = chrono::Local::now();
+        for point in points {
+            let Ok(age) = local_now.signed_duration_since(point.ts).to_std() else {
+                continue;
+            };
+            if age > DASHBOARD_CPU_HISTORY_WINDOW {
+                continue;
+            }
+            self.dashboard_cpu_history.push_back(DashboardCpuSample {
+                at: now.checked_sub(age).unwrap_or(now),
+                point,
+            });
+        }
+        self.last_dashboard_sample_at = self.dashboard_cpu_history.back().map(|sample| sample.at);
+    }
+
     fn record_cpu_sample(&mut self, now: Instant, usage_percent: f32) {
         if self.first_cpu_sample_at.is_none() {
             self.first_cpu_sample_at = Some(now);
@@ -215,8 +245,9 @@ impl MonitorState {
 
     fn cpu_is_quiet(&self, now: Instant) -> bool {
         let _ = now;
-        self.cpu_average_percent()
-            .is_some_and(|average| average <= self.config.general.cpu_average_threshold_percent as f32)
+        self.cpu_average_percent().is_some_and(|average| {
+            average <= self.config.general.cpu_average_threshold_percent as f32
+        })
     }
 
     fn cpu_average_percent(&self) -> Option<f32> {
@@ -255,7 +286,8 @@ impl MonitorState {
     fn plan_name_for_guid(&self, guid: &str) -> String {
         self.available_plans
             .iter()
-            .find(|plan| plan.guid == guid).map_or_else(|| guid.to_string(), |plan| plan.name.clone())
+            .find(|plan| plan.guid == guid)
+            .map_or_else(|| guid.to_string(), |plan| plan.name.clone())
     }
 
     fn current_trigger_description(
@@ -271,16 +303,15 @@ impl MonitorState {
             return matched.join(", ");
         }
         if self.last_match_at.is_some()
-            && self
-                .last_match_at
-                .is_some_and(|last| {
-                    now.duration_since(last)
-                        < Duration::from_secs(self.config.general.hold_performance_seconds)
-                })
+            && self.last_match_at.is_some_and(|last| {
+                now.duration_since(last)
+                    < Duration::from_secs(self.config.general.hold_performance_seconds)
+            })
         {
-            return self
-                .last_match_trigger
-                .as_ref().map_or_else(|| "hold timer".to_string(), |trigger| format!("{trigger} (holding)"));
+            return self.last_match_trigger.as_ref().map_or_else(
+                || "hold timer".to_string(),
+                |trigger| format!("{trigger} (holding)"),
+            );
         }
         if idle_for < Duration::from_secs(self.config.general.idle_wait_seconds) {
             return "input resumed".to_string();
@@ -483,9 +514,10 @@ impl MonitorState {
                     self.low_power_busy_since = None;
                     return PlanDecision {
                         guid: self.config.general.performance_plan_guid.clone(),
-                        trigger: self
-                            .last_match_trigger
-                            .as_ref().map_or_else(|| "hold timer".to_string(), |trigger| format!("{trigger} (holding)")),
+                        trigger: self.last_match_trigger.as_ref().map_or_else(
+                            || "hold timer".to_string(),
+                            |trigger| format!("{trigger} (holding)"),
+                        ),
                     };
                 }
             }
@@ -550,14 +582,22 @@ pub(crate) fn run(
 ) {
     let idle_reader = WindowsIdleReader;
     let initial_guid = power
-        .get_active_plan().map_or_else(|_| config.general.standard_plan_guid.clone(), |p| p.guid);
+        .get_active_plan()
+        .map_or_else(|_| config.general.standard_plan_guid.clone(), |p| p.guid);
 
     let available_plans = app_state.read().unwrap().available_plans.clone();
+    let initial_dashboard_history = app_state.read().unwrap().cpu_history.clone();
     let mut state = MonitorState::new(config, initial_guid, available_plans);
+    state.seed_dashboard_history(initial_dashboard_history, Instant::now());
     let mut cpu_info = power.get_cpu_info().ok();
-    let mut plan_processor_settings =
-        refresh_plan_processor_settings(&*power, &state.config);
+    let mut plan_processor_settings = refresh_plan_processor_settings(&*power, &state.config);
     let mut last_sanity = Instant::now();
+    let mut last_process_refresh = stale_instant(PROCESS_REFRESH_INTERVAL);
+    let mut running: Vec<RunningProcess> = Vec::new();
+    let mut matched: Vec<String> = Vec::new();
+    let mut ui_repaint_enabled = true;
+    let mut process_details_enabled = false;
+    let mut last_ui_repaint = stale_instant(UI_REPAINT_INTERVAL);
 
     loop {
         // Drain commands before each tick
@@ -578,7 +618,8 @@ pub(crate) fn run(
                         let plan_name = state
                             .available_plans
                             .iter()
-                            .find(|p| p.guid == guid).map_or_else(|| guid.clone(), |p| p.name.clone());
+                            .find(|p| p.guid == guid)
+                            .map_or_else(|| guid.clone(), |p| p.name.clone());
                         let (bat_on, bat_pct) = {
                             let s = app_state.read().unwrap();
                             (s.battery.on_battery, s.battery.percent)
@@ -603,10 +644,18 @@ pub(crate) fn run(
                 MonitorCommand::UpdateWatchlist(list) => {
                     state.config.watchlist.processes = list;
                     state.rebuild_watchlist_lower();
+                    last_process_refresh = stale_instant(PROCESS_REFRESH_INTERVAL);
+                    if state.watchlist_lower.is_empty() {
+                        matched.clear();
+                    }
                 }
                 MonitorCommand::UpdateConfig(cfg) => {
                     state.config = cfg;
                     state.rebuild_watchlist_lower();
+                    last_process_refresh = stale_instant(PROCESS_REFRESH_INTERVAL);
+                    if state.watchlist_lower.is_empty() {
+                        matched.clear();
+                    }
                     plan_processor_settings =
                         refresh_plan_processor_settings(&*power, &state.config);
                 }
@@ -615,9 +664,8 @@ pub(crate) fn run(
                     recommendation,
                 } => {
                     if let Err(err) = power.apply_processor_preset(&guid, recommendation) {
-                        app_state.write().unwrap().last_error = Some(format!(
-                            "Failed to update high-performance settings: {err}"
-                        ));
+                        app_state.write().unwrap().last_error =
+                            Some(format!("Failed to update high-performance settings: {err}"));
                     } else if state.current_plan_guid == guid {
                         let _ = power.set_active_plan(&guid);
                     }
@@ -632,9 +680,7 @@ pub(crate) fn run(
                             plan_processor_settings =
                                 refresh_plan_processor_settings(&*power, &state.config);
                             let mut shared = app_state.write().unwrap();
-                            shared
-                                .available_plans
-                                .clone_from(&state.available_plans);
+                            shared.available_plans.clone_from(&state.available_plans);
                             shared.current_plan = Some(plan.clone());
                             shared.ultimate_performance_setup =
                                 UltimatePerformanceSetupState::Succeeded(plan);
@@ -657,12 +703,32 @@ pub(crate) fn run(
                     plan_processor_settings =
                         refresh_plan_processor_settings(&*power, &state.config);
                 }
+                MonitorCommand::SetUiRepaintEnabled(enabled) => {
+                    ui_repaint_enabled = enabled;
+                    if enabled {
+                        last_process_refresh = stale_instant(PROCESS_REFRESH_INTERVAL);
+                        last_ui_repaint = stale_instant(UI_REPAINT_INTERVAL);
+                    }
+                }
+                MonitorCommand::SetRunningProcessDetailsEnabled(enabled) => {
+                    process_details_enabled = enabled;
+                    last_process_refresh = stale_instant(PROCESS_REFRESH_INTERVAL);
+                    if !enabled {
+                        running.clear();
+                    }
+                }
                 MonitorCommand::ForceConfiguredStandard
                 | MonitorCommand::ForceConfiguredPerformance => unreachable!(),
             }
         }
 
-        let poll = Duration::from_millis(state.config.general.poll_interval_ms);
+        let configured_poll = Duration::from_millis(state.config.general.poll_interval_ms)
+            .max(MIN_MONITOR_POLL_INTERVAL);
+        let poll = if ui_repaint_enabled {
+            configured_poll
+        } else {
+            configured_poll.max(BACKGROUND_POLL_INTERVAL)
+        };
         let now = Instant::now();
 
         state.sys.refresh_cpu();
@@ -677,14 +743,27 @@ pub(crate) fn run(
             cpu_info.as_ref().and_then(|info| info.base_mhz),
         );
 
-        // Enumerate processes
-        let running = get_running_processes(&mut state.sys);
-        // running is already deduplicated by name (one entry per unique process name)
-        let matched: Vec<String> = running
-            .iter()
-            .filter(|p| state.watchlist_lower.contains(&p.name.to_lowercase()))
-            .map(|p| p.name.clone())
-            .collect();
+        // Enumerate processes on a short cadence. CPU sampling can stay fast without rebuilding
+        // the full process table and exe path list every monitor tick. Full path details are only
+        // needed for the visible Watched Apps tab; auto-switching only needs process names.
+        if now.duration_since(last_process_refresh) >= PROCESS_REFRESH_INTERVAL
+            && (process_details_enabled || !state.watchlist_lower.is_empty())
+        {
+            if process_details_enabled {
+                running = get_running_processes(&mut state.sys);
+                matched = match_watchlist(
+                    running.iter().map(|process| process.name.as_str()),
+                    &state.watchlist_lower,
+                );
+            } else {
+                let running_names = get_running_process_names(&mut state.sys);
+                matched = match_watchlist(
+                    running_names.iter().map(String::as_str),
+                    &state.watchlist_lower,
+                );
+            }
+            last_process_refresh = now;
+        }
         let has_match = !matched.is_empty();
 
         if has_match {
@@ -711,7 +790,8 @@ pub(crate) fn run(
                 let plan_name = state
                     .available_plans
                     .iter()
-                    .find(|p| p.guid == target_guid).map_or_else(|| target_guid.clone(), |p| p.name.clone());
+                    .find(|p| p.guid == target_guid)
+                    .map_or_else(|| target_guid.clone(), |p| p.name.clone());
 
                 let event = PowerEvent {
                     ts: chrono::Local::now(),
@@ -784,8 +864,12 @@ pub(crate) fn run(
 
             let mut s = app_state.write().unwrap();
             s.current_plan = current_plan;
-            s.matched_processes = matched;
-            s.all_running_processes = running;
+            s.matched_processes.clone_from(&matched);
+            if process_details_enabled {
+                s.all_running_processes.clone_from(&running);
+            } else if !s.all_running_processes.is_empty() {
+                s.all_running_processes.clear();
+            }
             s.hold_remaining_secs = hold_remaining;
             s.idle_for_secs = Some(idle_for.as_secs_f32());
             s.cpu_average_percent = cpu_average_percent;
@@ -819,8 +903,11 @@ pub(crate) fn run(
             });
         }
 
-        if let Some(ctx) = repaint_ctx.get() {
-            ctx.request_repaint();
+        if ui_repaint_enabled && now.duration_since(last_ui_repaint) >= UI_REPAINT_INTERVAL {
+            if let Some(ctx) = repaint_ctx.get() {
+                ctx.request_repaint();
+                last_ui_repaint = now;
+            }
         }
 
         std::thread::sleep(poll);
@@ -836,7 +923,10 @@ fn get_running_processes(sys: &mut SysInfo) -> Vec<RunningProcess> {
         .filter_map(|p| {
             let name = p.name().to_string();
             if seen.insert(name.to_lowercase()) {
-                let path = p.exe().and_then(|e| e.to_str()).map(std::string::ToString::to_string);
+                let path = p
+                    .exe()
+                    .and_then(|e| e.to_str())
+                    .map(std::string::ToString::to_string);
                 Some(RunningProcess { name, path })
             } else {
                 None
@@ -845,6 +935,39 @@ fn get_running_processes(sys: &mut SysInfo) -> Vec<RunningProcess> {
         .collect();
     result.sort_by_key(|a| a.name.to_lowercase());
     result
+}
+
+fn get_running_process_names(sys: &mut SysInfo) -> Vec<String> {
+    sys.refresh_processes();
+    let mut seen = std::collections::HashSet::new();
+    let mut result: Vec<String> = sys
+        .processes()
+        .values()
+        .filter_map(|process| {
+            let name = process.name();
+            if seen.insert(name.to_lowercase()) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    result.sort_by_key(|name| name.to_lowercase());
+    result
+}
+
+fn match_watchlist<'a>(
+    running_names: impl Iterator<Item = &'a str>,
+    watchlist_lower: &[String],
+) -> Vec<String> {
+    if watchlist_lower.is_empty() {
+        return vec![];
+    }
+
+    running_names
+        .filter(|name| watchlist_lower.contains(&name.to_lowercase()))
+        .map(str::to_string)
+        .collect()
 }
 
 fn refresh_plan_processor_settings(
@@ -1297,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cpu_history_prunes_to_fifteen_minutes() {
+    fn test_cpu_history_prunes_to_recent_chart_window() {
         let mut s = MonitorState::new(test_config(), "standard-guid".into(), vec![]);
         let base = Instant::now();
 
@@ -1310,11 +1433,16 @@ mod tests {
             None,
         );
 
-        let sixteen_minutes_later = base + Duration::from_mins(16);
-        s.record_cpu_sample(sixteen_minutes_later.checked_sub(Duration::from_secs(30)).unwrap(), 7.0);
-        s.record_cpu_sample(sixteen_minutes_later, 9.0);
+        let after_recent_chart_window = base + Duration::from_mins(121);
+        s.record_cpu_sample(
+            after_recent_chart_window
+                .checked_sub(Duration::from_secs(30))
+                .unwrap(),
+            7.0,
+        );
+        s.record_cpu_sample(after_recent_chart_window, 9.0);
         s.record_cpu_history(
-            sixteen_minutes_later,
+            after_recent_chart_window,
             "standard",
             CpuFrequencySample::default(),
             None,

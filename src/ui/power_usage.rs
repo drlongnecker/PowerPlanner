@@ -1,6 +1,6 @@
 use crate::config::{Config, PowerUsageRangeMode};
 use crate::db;
-use crate::types::{CpuHistoryPlanKind, CpuHistoryPoint, MonitorCommand};
+use crate::types::{AppState, CpuHistoryPlanKind, CpuHistoryPoint, MonitorCommand};
 use crate::ui::design;
 use egui::{self, Align2, Color32, Pos2, RichText, Sense, Shape, Stroke, Ui};
 use std::sync::mpsc;
@@ -19,11 +19,16 @@ struct PowerUsageSummary {
     estimated_savings_usd: f64,
 }
 
-pub(crate) fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<MonitorCommand>) {
+pub(crate) fn render(
+    ui: &mut Ui,
+    state: &AppState,
+    config: &mut Config,
+    tx: &mpsc::Sender<MonitorCommand>,
+) {
     let mut changed = false;
     let mut usage_window_minutes = config.general.usage_trend_window_minutes;
     let mut range_mode = config.general.power_usage_range_mode;
-    let history = load_power_usage_history(config);
+    let history = load_power_usage_history(state, config);
 
     crate::ui::padded_page(ui, |ui| {
         design::section_with_header_action(
@@ -82,7 +87,7 @@ pub(crate) fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<Monitor
                         });
                     });
                     ui.add_space(6.0);
-                    render_chart_legend(ui);                    
+                    render_chart_legend(ui);
                 } else {
                     render_chart_legend(ui);
                     ui.add_space(18.0);
@@ -102,17 +107,28 @@ pub(crate) fn render(ui: &mut Ui, config: &mut Config, tx: &mpsc::Sender<Monitor
     }
 }
 
-fn load_power_usage_history(config: &Config) -> Vec<CpuHistoryPoint> {
-    let Ok(conn) = db::open() else {
-        return vec![];
-    };
+fn load_power_usage_history(state: &AppState, config: &Config) -> Vec<CpuHistoryPoint> {
     match config.general.power_usage_range_mode {
-        PowerUsageRangeMode::RecentMinutes => db::query_dashboard_samples_recent(
-            &conn,
-            config.general.usage_trend_window_minutes.cast_signed(),
-        )
-        .unwrap_or_default(),
+        PowerUsageRangeMode::RecentMinutes => {
+            let threshold = chrono::Local::now()
+                - chrono::Duration::minutes(
+                    config
+                        .general
+                        .usage_trend_window_minutes
+                        .max(1)
+                        .cast_signed(),
+                );
+            state
+                .cpu_history
+                .iter()
+                .filter(|point| point.ts >= threshold)
+                .cloned()
+                .collect()
+        }
         PowerUsageRangeMode::AllRetained => {
+            let Ok(conn) = db::open() else {
+                return vec![];
+            };
             db::query_all_dashboard_samples(&conn).unwrap_or_default()
         }
     }
@@ -163,11 +179,23 @@ fn render_callouts(ui: &mut Ui, history: &[CpuHistoryPoint]) {
         let gap = design::spacing::ROW_GAP;
 
         let tiles: &[(&str, String)] = &[
-            ("Current est. CPU power", format!("{:.0} W", summary.latest_watts)),
-            ("Average est. CPU power", format!("{:.0} W", summary.average_watts)),
-            ("Peak est. CPU power", format!("{:.0} W", summary.peak_watts)),
+            (
+                "Current est. CPU power",
+                format!("{:.0} W", summary.latest_watts),
+            ),
+            (
+                "Average est. CPU power",
+                format!("{:.0} W", summary.average_watts),
+            ),
+            (
+                "Peak est. CPU power",
+                format!("{:.0} W", summary.peak_watts),
+            ),
             ("Estimated cost", format_money(summary.estimated_cost_usd)),
-            ("Estimated savings", format_money(summary.estimated_savings_usd)),
+            (
+                "Estimated savings",
+                format_money(summary.estimated_savings_usd),
+            ),
         ];
 
         let label_font = egui::FontId::proportional(design::type_size::HELP);
@@ -221,12 +249,14 @@ fn render_callouts(ui: &mut Ui, history: &[CpuHistoryPoint]) {
     }
 }
 
-fn render_power_usage_chart(ui: &mut Ui, history: &[CpuHistoryPoint], height: f32) -> Option<CpuHistoryPoint> {
+fn render_power_usage_chart(
+    ui: &mut Ui,
+    history: &[CpuHistoryPoint],
+    height: f32,
+) -> Option<CpuHistoryPoint> {
     let desired_width = ui.available_width().max(160.0);
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(desired_width, height),
-        Sense::hover(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(desired_width, height), Sense::hover());
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
     painter.rect_filled(rect, design::radius::CONTROL, visuals.extreme_bg_color);
@@ -453,13 +483,23 @@ fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>) {
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
                     design::info_row(ui, "Timestamp", "", false);
-                    design::info_row(ui, "  ", &point.ts.format("%Y-%m-%d %H:%M:%S").to_string(), true);
+                    design::info_row(
+                        ui,
+                        "  ",
+                        &point.ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        true,
+                    );
 
                     design::info_row(ui, "Plan", "", false);
                     design::info_row(ui, "  ", &point.plan_name, true);
 
                     design::info_row(ui, "Trigger", "", false);
-                    design::info_row(ui, "  ", point.trigger.trim_start_matches("__highlighted__"), true);
+                    design::info_row(
+                        ui,
+                        "  ",
+                        point.trigger.trim_start_matches("__highlighted__"),
+                        true,
+                    );
 
                     design::info_row(ui, "CPU speed", "", false);
                     design::info_row(ui, "  ", &format_speed_pair(point), true);
@@ -469,10 +509,10 @@ fn render_sample_details(ui: &mut Ui, selected: Option<&CpuHistoryPoint>) {
 
                     design::info_row(ui, "CPU average", "", false);
                     design::info_row(ui, "  ", &format!("{:.1}%", point.average_percent), true);
-                    
+
                     design::info_row(ui, "Est. cost", "", false);
                     design::info_row(ui, "  ", &format_money(energy.estimated_cost_usd), true);
-                    
+
                     design::info_row(ui, "Est. savings", "", false);
                     design::info_row(ui, "  ", &format_money(energy.estimated_savings_usd), true);
                 });
