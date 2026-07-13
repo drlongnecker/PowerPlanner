@@ -2,6 +2,7 @@
 name = "powerplanner"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [[bin]]
 name = "powerplanner"
@@ -37,6 +38,9 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }
 
 [lints.rust]
 future_incompatible = "warn"
